@@ -1,0 +1,8 @@
+# Nothing here is generated at run time. The binaries under scripts/ are committed on purpose:
+# that is what lets a copy work without a Go toolchain.
+
+# Editor state, and the audit hook's own output — the log belongs to the project this is copied
+# into, not to the template.
+.idea/
+.vscode/
+management/

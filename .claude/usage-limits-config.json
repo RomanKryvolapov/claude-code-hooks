@@ -1,0 +1,54 @@
+{
+  "fetch_ttl_sec": 60,
+  "gate_enabled": true,
+  "time_zone": "Europe/Kyiv",
+  "working_week": {
+    "mon": {
+      "percent": 100,
+      "from": "12:00",
+      "to": "20:00"
+    },
+    "tue": {
+      "percent": 100,
+      "from": "12:00",
+      "to": "20:00"
+    },
+    "wed": {
+      "percent": 100,
+      "from": "12:00",
+      "to": "20:00"
+    },
+    "thu": {
+      "percent": 100,
+      "from": "12:00",
+      "to": "20:00"
+    },
+    "fri": {
+      "percent": 100,
+      "from": "12:00",
+      "to": "20:00"
+    },
+    "sat": {
+      "percent": 20,
+      "from": "12:00",
+      "to": "20:00"
+    },
+    "sun": {
+      "percent": 20,
+      "from": "12:00",
+      "to": "20:00"
+    }
+  },
+  "zones": {
+    "session": {
+      "YELLOW": 50,
+      "ORANGE": 80,
+      "RED": 90
+    },
+    "weekly": {
+      "YELLOW": 80,
+      "ORANGE": 90,
+      "RED": 95
+    }
+  }
+}

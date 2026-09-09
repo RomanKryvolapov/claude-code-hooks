@@ -1,0 +1,57 @@
+#!/bin/sh
+# work-audit — thin cross-platform launcher for the Go work-audit hook.
+#
+# Mirrors the usage-limits launcher. Claude Code runs hook commands through
+# sh -c on macOS/Linux and Git Bash on Windows, so this POSIX script runs
+# everywhere Claude Code does — no Node, no extra runtime. It logs conceptual
+# work events (session starts, user prompts) to management/logs/ (audit).
+#
+# settings.json invokes it as:
+#   "${CLAUDE_PROJECT_DIR}/.claude/hooks/work-audit"
+#
+# Keep this file LF-only (see .gitattributes) — a CRLF shebang breaks Git Bash.
+#
+# Personal opt-out — a developer who does either of these writes no audit log for
+# their own sessions, while the hook keeps logging as before for everyone else:
+# set WFG_WORK_AUDIT_OFF to any value, or create the untracked marker file
+# .claude/hooks/.audit-off (see .gitignore).
+
+[ -n "${WFG_WORK_AUDIT_OFF:-}" ] && exit 0
+[ -f "$(dirname -- "$0")/.audit-off" ] && exit 0
+
+case "$(uname -s 2>/dev/null)" in
+	Darwin*)               name="work-audit-darwin-arm64" ;;
+	Linux*)                name="work-audit-linux-amd64" ;;
+	MINGW*|MSYS*|CYGWIN*)  name="work-audit-windows-amd64.exe" ;;
+	*)                     name="work-audit-linux-amd64" ;;
+esac
+
+# Find the binary from this launcher's own location first (<project>/.claude/hooks/),
+# so it also works when run from a shell without CLAUDE_PROJECT_DIR exported; the
+# variable stays as the fallback.
+self=$(CDPATH= cd -- "$(dirname -- "$0")/../.." 2>/dev/null && pwd)
+
+# A caller that set CLAUDE_PROJECT_DIR meant it: the binary reads that project, so the variable is
+# left exactly as given and only filled in when it was empty.
+given=${CLAUDE_PROJECT_DIR:-}
+
+# Projects keep the binaries in one of three places; look in all of them so one copy of this
+# launcher works wherever it is dropped, instead of a per-project variant that differs by one path.
+for root in "$given" "$self"; do
+	[ -n "$root" ] || continue
+	for dir in scripts scripts/claude-code .claude/bin; do
+		if [ -x "$root/$dir/$name" ]; then
+			# The binary resolves the project from this variable; fill it in so a hand-run from
+			# another directory still works inside the project it found.
+			if [ -z "$given" ]; then
+				CLAUDE_PROJECT_DIR="$root"
+				export CLAUDE_PROJECT_DIR
+			fi
+			exec "$root/$dir/$name" "$@"
+		fi
+	done
+done
+
+# A logger must never take the session down: if no binary is found, exit cleanly
+# with no output rather than erroring the hook.
+exit 0

@@ -1,0 +1,17 @@
+# The launchers are POSIX scripts: a CRLF shebang breaks them on Linux and macOS, and Windows
+# checkouts convert line endings by default.
+.claude/hooks/* text eol=lf
+*.sh text eol=lf
+
+# The prebuilt binaries and the sound are binary, whatever a platform's heuristics guess.
+scripts/usage-limits-darwin-arm64 binary
+scripts/usage-limits-linux-amd64 binary
+scripts/usage-limits-windows-amd64.exe binary
+scripts/play-sound-darwin-arm64 binary
+scripts/play-sound-linux-amd64 binary
+scripts/play-sound-windows-amd64.exe binary
+.claude/sounds/*.wav binary
+
+# The work-audit log is append-only and one file per session: on merge, keep both sides
+# instead of conflicting.
+management/logs/** merge=union

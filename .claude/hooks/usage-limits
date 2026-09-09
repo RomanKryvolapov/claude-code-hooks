@@ -1,0 +1,52 @@
+#!/bin/sh
+# usage-limits — thin cross-platform launcher for the Go usage-limits hook.
+#
+# Claude Code runs hook commands through sh -c on macOS/Linux and through
+# Git Bash on Windows, so this POSIX script runs everywhere Claude Code does —
+# no Node, no extra runtime. It picks the prebuilt binary for the current OS
+# (one arch per OS is shipped) and hands off all arguments and stdin unchanged.
+#
+# settings.json invokes it as:
+#   "${CLAUDE_PROJECT_DIR}/.claude/hooks/usage-limits" --mode inject --event ...
+#
+# Keep this file LF-only (see .gitattributes) — a CRLF shebang breaks Git Bash.
+
+case "$(uname -s 2>/dev/null)" in
+	Darwin*)               name="usage-limits-darwin-arm64" ;;
+	Linux*)                name="usage-limits-linux-amd64" ;;
+	MINGW*|MSYS*|CYGWIN*)  name="usage-limits-windows-amd64.exe" ;;
+	*)                     name="usage-limits-linux-amd64" ;;
+esac
+
+# Find the binary from this launcher's own location first — it lives in
+# <project>/.claude/hooks/, so running it straight from a shell works even when
+# CLAUDE_PROJECT_DIR is not exported (it is set for hooks, not for plain commands).
+# The variable stays as the fallback.
+self=$(CDPATH= cd -- "$(dirname -- "$0")/../.." 2>/dev/null && pwd)
+
+# A caller that set CLAUDE_PROJECT_DIR meant it: the binary reads that project's config, so the
+# variable is left exactly as given and only filled in when it was empty. Overwriting it with the
+# launcher's own location made an explicit setting impossible to honour, so pointing the hook at
+# another project's config silently read this one's instead.
+given=${CLAUDE_PROJECT_DIR:-}
+
+# Projects keep the binaries in one of three places; look in all of them so one copy of this
+# launcher works wherever it is dropped, instead of a per-project variant that differs by one path.
+for root in "$given" "$self"; do
+	[ -n "$root" ] || continue
+	for dir in scripts scripts/claude-code .claude/bin; do
+		if [ -x "$root/$dir/$name" ]; then
+			# The binary resolves the project from this variable; fill it in so a hand-run from
+			# another directory still writes and reads inside the project it found.
+			if [ -z "$given" ]; then
+				CLAUDE_PROJECT_DIR="$root"
+				export CLAUDE_PROJECT_DIR
+			fi
+			exec "$root/$dir/$name" "$@"
+		fi
+	done
+done
+
+# A limits helper must never take the session down: if no binary is found, exit
+# cleanly with no output rather than erroring the hook.
+exit 0
