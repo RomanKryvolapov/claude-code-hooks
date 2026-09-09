@@ -115,7 +115,7 @@ a name that is not a zone, and a config file that is not valid JSON. That line i
 correct config, and it is printed even when the usage API cannot be reached — which is exactly when
 somebody is most likely to be editing the file.
 
-Where a day begins is decided by one named zone — `time_zone` in the config, `Europe/Kyiv` by
+Where a day begins is decided by one named zone — `time_zone` in the config, `Europe/Sofia` by
 default — rather than by the host clock, so a CI box on UTC, a container and a laptop that travelled
 all place the working day in the same hours. The zone database is compiled into the binary (about
 400 KB of its size), because Windows ships none and a slim Linux image often ships none either. An

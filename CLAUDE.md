@@ -18,6 +18,18 @@ useful. No runtime to install — no Node, no Python, no Go.
 numbers; the rule is what tells the model to size work to the task, when a subagent is worth
 spawning, and what each zone allows. Copied without it, the numbers are decoration.
 
+Eight further rules sit beside it in `.claude/rules/` — `before-starting-work`,
+`working-autonomously`, `architectural-forks`, `code-quality`, `finishing-work`, `merge-conflicts`,
+`response-style` and `web-search-when-in-doubt`. They are independent of the hooks, and README.md
+says what each is for. With them come `.claude/agents/change-reviewer.md`, the independent grading
+pass `finishing-work` launches (the limits gate exempts it by name), and
+`.claude/skills/dev-ai-prompt-generation/`, a skill on writing prompts, skills and rules.
+
+**Rules load by themselves.** Claude Code reads every `.md` under `.claude/rules/` at launch, with
+the same priority as `.claude/CLAUDE.md` — no import and no line here is needed. That also means all
+nine are in the context window of every session; a rule scoped to part of a codebase would carry a
+`paths:` frontmatter key instead, and none of these do.
+
 **To install all of this into another project, follow [AGENTS.md](AGENTS.md).** It is written for
 you: the files to copy, the `settings.json` to merge, how to make the rule actually load, the two
 invisible steps that break the hooks on somebody else's machine (line endings and the executable

@@ -7,6 +7,9 @@
 scripts/usage-limits-darwin-arm64 binary
 scripts/usage-limits-linux-amd64 binary
 scripts/usage-limits-windows-amd64.exe binary
+scripts/work-audit-darwin-arm64 binary
+scripts/work-audit-linux-amd64 binary
+scripts/work-audit-windows-amd64.exe binary
 scripts/play-sound-darwin-arm64 binary
 scripts/play-sound-linux-amd64 binary
 scripts/play-sound-windows-amd64.exe binary

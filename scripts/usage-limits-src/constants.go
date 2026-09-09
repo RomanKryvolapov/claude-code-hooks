@@ -61,7 +61,7 @@ var workingWeek = [7]workingDay{
 // Any IANA name; override with "time_zone" in the config, and an empty value means "use whatever
 // zone this machine is set to". It moves the day and the hours only — every clock time on screen
 // stays in the machine's own zone, because that is where the person is reading it.
-const defaultTimeZone = "Europe/Kyiv"
+const defaultTimeZone = "Europe/Sofia"
 
 // --- the windows the API reports against --------------------------------------
 //

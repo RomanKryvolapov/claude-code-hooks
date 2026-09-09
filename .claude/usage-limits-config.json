@@ -1,7 +1,7 @@
 {
   "fetch_ttl_sec": 60,
   "gate_enabled": true,
-  "time_zone": "Europe/Kyiv",
+  "time_zone": "Europe/Sofia",
   "working_week": {
     "mon": {
       "percent": 100,

@@ -171,7 +171,7 @@ func TestWeightedMinutesKnownSpans(t *testing.T) {
 
 // The gauge must stand still overnight — that is the whole point of having working hours.
 func TestGaugeDoesNotMoveOvernight(t *testing.T) {
-	withZone(t, "Europe/Kyiv", func() {
+	withZone(t, "Europe/Sofia", func() {
 		withWeek(t, shippedWeek, func() {
 			reset := at(t, "2026-09-14 18:00")
 			_, evening := weeklyWindowGauge(reset, at(t, "2026-09-08 20:00"))
@@ -231,7 +231,7 @@ func TestWeightedMinutesAgreesWithBruteForce(t *testing.T) {
 		"America/Santiago", "America/Havana", // move the clock at 00:00
 		"Asia/Beirut", "Africa/Cairo", // midnight-adjacent
 		"Australia/Lord_Howe", "Pacific/Chatham", "Asia/Kathmandu", // half-hour and 45-minute offsets
-		"America/New_York", "Europe/Kyiv", "Australia/Sydney", "UTC",
+		"America/New_York", "Europe/Sofia", "Australia/Sydney", "UTC",
 	}
 	starts := []string{"2026-03-05", "2026-04-02", "2026-09-03", "2026-10-29", "2026-11-01", "2026-06-10"}
 	for _, w := range [][7]workingDay{shippedWeek, spikyWeek} {
@@ -286,7 +286,7 @@ func offsetChanges(t *testing.T, year int, loc *time.Location) []time.Time {
 func TestWeightedMinutesAroundClockChanges(t *testing.T) {
 	zones := []string{
 		"America/Santiago", "America/Havana", "Asia/Beirut", "Africa/Cairo",
-		"Australia/Lord_Howe", "Pacific/Chatham", "America/New_York", "Europe/Kyiv", "Australia/Sydney",
+		"Australia/Lord_Howe", "Pacific/Chatham", "America/New_York", "Europe/Sofia", "Australia/Sydney",
 	}
 	for _, w := range [][7]workingDay{spikyWeek, shippedWeek} {
 		withWeek(t, w, func() {
@@ -316,7 +316,7 @@ func TestWeightedMinutesAroundClockChanges(t *testing.T) {
 
 // A working window shorter than the coarse search stride must not be stepped over.
 func TestShortWorkingWindowIsNotSteppedOver(t *testing.T) {
-	withZone(t, "Europe/Kyiv", func() {
+	withZone(t, "Europe/Sofia", func() {
 		var w [7]workingDay
 		for i := range w {
 			w[i] = workingDay{PercentOfDay: 100, FromMin: clockMin(13, 0), ToMin: clockMin(13, 5)}
@@ -394,7 +394,7 @@ func TestWeeklyWindowGaugeSilentOnStaleOrMissingReset(t *testing.T) {
 
 // The gauge only ever moves forwards, and reaches exactly 100 at the reset.
 func TestWeeklyWindowGaugeIsMonotonic(t *testing.T) {
-	withZone(t, "Europe/Kyiv", func() {
+	withZone(t, "Europe/Sofia", func() {
 		withWeek(t, shippedWeek, func() {
 			reset := at(t, "2026-09-14 18:00")
 			minutes := make([]int, 0, 600)

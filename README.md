@@ -10,12 +10,15 @@ Three hooks for [Claude Code](https://claude.com/claude-code), ready to drop int
   look away while it works.
 
 All three are single static binaries built from the Go sources in this repository, committed for
-macOS, Linux and Windows. **There is no runtime to install** — no Node, no Python, no Go. Copy two
-folders and it works.
+macOS on Apple Silicon, Linux on x86-64 and Windows on x86-64. **There is no runtime to install** —
+no Node, no Python, no Go. Copy two folders and it works. On any other platform — an Intel Mac,
+arm64 Linux — run `sh scripts/<name>-src/build.sh` once; you need Go only for that.
 
-One behaviour rule ships with them, `.claude/rules/session-budget.md`. The limits hook supplies the
-numbers; that rule is what makes the model act on them. Copied without it, the numbers are
-decoration — see [The rule that makes the numbers matter](#the-rule-that-makes-the-numbers-matter).
+A set of behaviour rules ships alongside them in `.claude/rules/`, together with one subagent and
+one skill. The limits hook supplies numbers; the `session-budget` rule is what makes the model act
+on them, and copied without it the numbers are decoration. See
+[What else is in here](#what-else-is-in-here) for what each rule, the subagent and the skill are
+for — they are useful on their own and can be taken separately from the hooks.
 
 ---
 
@@ -118,7 +121,7 @@ what actually resets.
 
 ### Where a day begins
 
-In one named time zone, written down in the config (`Europe/Kyiv` by default) rather than taken from
+In one named time zone, written down in the config (`Europe/Sofia` by default) rather than taken from
 the host clock — so a CI box on UTC, a container and a laptop that travelled all place the working
 day in the same hours. Any IANA name works; an empty value means "use this machine's zone".
 
@@ -158,7 +161,7 @@ keep the display.
 | Key                     | Default         | What it sets                                                 |
 | ----------------------- | --------------- | ------------------------------------------------------------ |
 | `working_week`          | noon–8, wknd 20 | Per weekday: `percent`, `from`, `to` — see above             |
-| `time_zone`             | `Europe/Kyiv`   | The zone the working week is measured in                     |
+| `time_zone`             | `Europe/Sofia`  | The zone the working week is measured in                     |
 | `zones`                 | see the table   | `session` and `weekly` thresholds for YELLOW / ORANGE / RED  |
 | `gate_enabled`          | `true`          | Whether the gate refuses spawns at all                       |
 | `fetch_ttl_sec`         | `60`            | How long a fetched usage document is reused before re-asking |
@@ -197,9 +200,57 @@ working sequentially rather than a fan-out, what each zone allows, what the bind
 whether switching model would help at all, and when to split a long task and write a checkpoint
 instead of running into the wall.
 
-**Rules are a convention, not a mechanism.** Claude Code loads `CLAUDE.md` from the project root
-automatically; it does not load `.claude/rules/` on its own. The rule takes effect only once the
-project's own `CLAUDE.md` points at it — one line, and [AGENTS.md](AGENTS.md) gives it.
+**Copying the file is the whole installation.** Claude Code discovers every `.md` under
+`.claude/rules/` at launch, recursively, and loads it with the same priority as `.claude/CLAUDE.md`.
+No import, no line in `CLAUDE.md`, nothing to wire.
+
+---
+
+## What else is in here
+
+The rules, the subagent and the skill are independent of the hooks — take the ones you want. Only
+`session-budget` has a tie to them, and it is the one described above.
+
+### The rules
+
+`.claude/rules/`, nine files, about 1,500 lines. Because rules load unconditionally, **all of them
+sit in the context window of every session** — that is what they cost. A rule that should only apply
+to part of a codebase can carry a `paths:` frontmatter key with glob patterns, and then loads only
+when Claude touches a matching file; none of these nine do, because none of them are about a
+particular kind of file.
+
+| Rule                      | What it is for                                                                                                                                                                                            |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session-budget`          | The other half of the limits hook: size effort by the task's own complexity rather than by what is left, when a subagent is worth spawning at all, what each zone allows, when to split a task and checkpoint |
+| `before-starting-work`    | Pull before acting on the message, read what actually arrived, and check what the project stands on — all of it before planning, editing or reviewing                                                       |
+| `working-autonomously`    | A task handed over is yours from beginning to end: decide what it contains, carry it to a verified finish, report once. Names the only two reasons to stop early                                            |
+| `architectural-forks`     | The opposite brake: when a choice is expensive to undo, stop and put the fork to the developer with the options laid out — and, just as firmly, what not to ask about                                       |
+| `code-quality`            | Find the mechanism that produces a defect instead of patching the symptom; clean without over-designing; SOLID as judgement. Its middle section is about prompts — when a model misbehaves, look at what reached it and in what order |
+| `finishing-work`          | One thorough revision before any turn that changed files ends: read in execution order, interrogate, build failure hypotheses, run it, judge it as an architect, then grade it independently                |
+| `merge-conflicts`         | A conflict is two people's intentions meeting, not two blocks of text disagreeing. Resolve by hand, never by force, and prove afterwards that both intentions survived                                      |
+| `response-style`          | Answer in the language of the message, and the shape of the two reports — the work report at the end of a turn that changed files, the problem report when a review turns something up                      |
+| `web-search-when-in-doubt`| When reality diverges from what you know, search before stacking another fix on an unverified assumption; the vendor's own documentation for the version in use is the authority                            |
+
+### The subagent
+
+`.claude/agents/change-reviewer.md` is the independent grading pass `finishing-work` requires. It
+receives the diff and the requirement and nothing else — no access to the author's reasoning, which
+is the point: an author who knows the intent reads the code as the intent. It is told to refute
+rather than confirm, it may not edit anything, and it works sequentially rather than broadly.
+
+**The limits hook knows about it.** The gate exempts `change-reviewer` by name, so the one pass a
+revision depends on is never the spawn that gets refused in a hot zone.
+
+### The skill
+
+`.claude/skills/dev-ai-prompt-generation/` — a hub `SKILL.md` plus 30 reference files on writing and
+reviewing prompts, Agent Skills, rules and `CLAUDE.md`: structure and delimiters, output contracts
+and structured outputs, reasoning-model effort knobs, few-shot, context engineering, prompt caching,
+evals and LLM-as-judge, injection defences, RAG grounding, and cross-vendor conventions.
+
+Unlike rules, **a skill costs nothing until it is used.** Only its name and description sit in
+context; the body loads when the model judges it relevant or you invoke it, and a reference file
+loads only when something opens it.
 
 ---
 
@@ -283,11 +334,20 @@ weekly-scoped bucket, and `config_problems`.
 
 ## Installing it in a project
 
-Copy two folders into the project root:
+Copy the hooks and their binaries into the project root:
 
 ```sh
 cp -r .claude/hooks .claude/sounds .claude/usage-limits-config.json <project>/.claude/
-cp -r scripts/usage-limits-* scripts/play-sound-* <project>/scripts/
+cp -r scripts/usage-limits-* scripts/work-audit-* scripts/play-sound-* <project>/scripts/
+```
+
+All three hooks must be copied together with all three sets of binaries. A launcher whose binary is
+missing exits 0 in silence — that is right for a hook and means the omission never announces itself.
+
+The rules, the subagent and the skill are separate and optional:
+
+```sh
+cp -r .claude/rules .claude/agents .claude/skills <project>/.claude/
 ```
 
 Then merge `.claude/settings.json` from this repository into the project's own — or copy it whole if
@@ -302,7 +362,8 @@ project's layout is respected.
 silently finds nothing on a Unix clone:
 
 ```sh
-git add --chmod=+x .claude/hooks/usage-limits .claude/hooks/play-sound scripts/usage-limits-* scripts/play-sound-*
+git add --chmod=+x .claude/hooks/usage-limits .claude/hooks/work-audit .claude/hooks/play-sound \
+  scripts/usage-limits-* scripts/work-audit-* scripts/play-sound-*
 ```
 
 The `.gitattributes` in this repository keeps the launchers LF-only; copy it too, or add the same
@@ -333,4 +394,10 @@ configured week is a calendar-shaped one.
 
 ## Requirements
 
-Claude Code, signed in (`claude login`). Nothing else. Go 1.25+ only if you want to rebuild.
+Claude Code, signed in (`claude login`). Nothing else.
+
+Binaries are committed for **darwin/arm64**, **linux/amd64** and **windows/amd64**. The launchers
+pick one by `uname` and do not check the architecture, so on a platform outside that list — an Intel
+Mac, an arm64 Linux box or container, FreeBSD — the exec fails rather than falling back. Build for it
+once with `sh scripts/<name>-src/build.sh`, which needs Go 1.25+. That is also the only thing Go is
+ever needed for.

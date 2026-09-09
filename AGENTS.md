@@ -10,9 +10,14 @@ and one behaviour rule.
 - `work-audit` — writes an append-only record of each session (prompts, choices, per-turn stats,
   files changed, final answer) under `management/logs/`.
 - `play-sound` — plays a sound when Claude Code stops or needs attention.
-- `.claude/rules/session-budget.md` — the rule that makes the limits hook worth having. The hook
-  supplies numbers; the rule is what tells the model to act on them. **Install it too, and make the
-  target's `CLAUDE.md` point at it, or the numbers are decoration.**
+- `.claude/rules/` — nine behaviour rules, of which `session-budget.md` is the one that makes the
+  limits hook worth having. The hook supplies numbers; the rule is what tells the model to act on
+  them. **Install it too, or the numbers are decoration.** The other eight are independent of the
+  hooks; `README.md` says what each is for.
+- `.claude/agents/change-reviewer.md` — the independent grading pass the `finishing-work` rule
+  requires. Install it whenever you install that rule; the limits gate exempts it by name.
+- `.claude/skills/dev-ai-prompt-generation/` — a skill on writing prompts, skills and rules.
+  Independent of everything else here.
 
 **There is no runtime to install.** No Node, no Python, no Go. The binaries are committed on purpose.
 
@@ -31,7 +36,7 @@ network access or a toolchain.
 
 ```sh
 mkdir -p <target>/.claude/hooks <target>/.claude/sounds <target>/scripts
-mkdir -p <target>/.claude/rules
+mkdir -p <target>/.claude/rules <target>/.claude/agents <target>/.claude/skills
 cp .claude/hooks/usage-limits .claude/hooks/work-audit .claude/hooks/play-sound <target>/.claude/hooks/
 cp .claude/sounds/notify.wav                            <target>/.claude/sounds/
 cp .claude/usage-limits-config.json                     <target>/.claude/
@@ -41,6 +46,19 @@ cp scripts/usage-limits-darwin-arm64 scripts/usage-limits-linux-amd64 scripts/us
 cp scripts/work-audit-darwin-arm64 scripts/work-audit-linux-amd64 scripts/work-audit-windows-amd64.exe       <target>/scripts/
 cp scripts/play-sound-darwin-arm64 scripts/play-sound-linux-amd64 scripts/play-sound-windows-amd64.exe       <target>/scripts/
 ```
+
+The other eight rules, the subagent and the skill are optional and independent of the hooks. Ask
+whether they are wanted before copying them — they change how the model behaves, and eight rules is
+about 1,400 lines in every session's context:
+
+```sh
+cp .claude/rules/*.md          <target>/.claude/rules/
+cp .claude/agents/*.md         <target>/.claude/agents/
+cp -r .claude/skills/dev-ai-prompt-generation <target>/.claude/skills/
+```
+
+`change-reviewer.md` is not optional if `finishing-work.md` is installed — that rule launches it by
+name at its grading stage, and without the file the pass silently cannot run.
 
 **If the target already has these hooks**, overwrite the launchers, the binaries and the sources, but
 **do not overwrite `.claude/usage-limits-config.json`** — it holds that project's own thresholds.
@@ -230,23 +248,31 @@ appending a second one.
 }
 ```
 
-### 3. Make the rule actually load
+### 3. Say what you installed — the rules need no wiring
 
-Claude Code reads `CLAUDE.md` from the project root on its own. It does **not** read
-`.claude/rules/` — that is a convention, and the rule only takes effect once the project's own
-`CLAUDE.md` points at it. Copying the file and stopping there leaves the limits hook printing
-numbers nothing acts on.
+**Copying the files is the whole installation.** Claude Code discovers every `.md` under
+`.claude/rules/` at launch, recursively, and loads it with the same priority as `.claude/CLAUDE.md`.
+There is no import to add and no line to put in `CLAUDE.md`. The same is true of
+`.claude/agents/` and `.claude/skills/`: a subagent is available by its filename, and a skill is
+offered by its `description`.
 
-If `<target>/CLAUDE.md` exists, add a line to it. If it does not, create it with one:
+What that does require is **telling the person plainly what you added**, in the report, by name.
+Rules are the one part of this install that changes how the model behaves rather than what it can
+see, they take effect in the next session without anyone opting in, and every one of them lands in
+the context window of every session from then on. Somebody who asked for a usage gauge should not
+discover a rule about merge conflicts by having it obeyed.
+
+If a rule should apply only to part of a codebase, give it a `paths:` frontmatter key and it loads
+only when Claude touches a matching file:
 
 ```markdown
-- [session-budget](.claude/rules/session-budget.md) — spend to the task; limits are a guardrail, not
-  a budget to fill. Binding, and loaded every session.
+---
+paths:
+  - "src/api/**/*.ts"
+---
 ```
 
-Put it wherever the file lists its own conventions; if there is no such place, a short
-`## Rules` heading is enough. Say plainly in your report that you edited `CLAUDE.md`, since it is the
-one file in this install that shapes how the model behaves rather than what it can see.
+None of the nine shipped rules carry one, because none of them are about a particular kind of file.
 
 ### 4. The two steps that are easy to miss
 
@@ -323,7 +349,7 @@ afterwards — it is not part of a real session.
 The one setting most installs want to change. In `<target>/.claude/usage-limits-config.json`:
 
 ```json
-"time_zone": "Europe/Kyiv",
+"time_zone": "Europe/Sofia",
 "working_week": {
   "mon": { "percent": 100, "from": "12:00", "to": "20:00" },
   "tue": { "percent": 100, "from": "12:00", "to": "20:00" },
