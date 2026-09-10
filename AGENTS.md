@@ -1,8 +1,9 @@
 # For an agent reading this repository
 
-**What this is:** three ready-to-install [Claude Code](https://claude.com/claude-code) hooks, shipped
-as committed static binaries for macOS, Linux and Windows plus the Go sources they were built from,
-and one behaviour rule.
+**What this is:** a whole `.claude/` for a project, ready to copy into one — three
+[Claude Code](https://claude.com/claude-code) hooks shipped as committed static binaries for macOS,
+Linux and Windows with the Go sources they were built from, nine behaviour rules, a reviewing
+subagent, a skill about writing prompts, and the `settings.json` that wires it together.
 
 - `usage-limits` — shows live Anthropic subscription usage (5-hour window, 7-day window, per-model
   weekly buckets) in the model's context and the status line, and gates subagent spawns near a limit.
@@ -10,20 +11,37 @@ and one behaviour rule.
 - `work-audit` — writes an append-only record of each session (prompts, choices, per-turn stats,
   files changed, final answer) under `management/logs/`.
 - `play-sound` — plays a sound when Claude Code stops or needs attention.
-- `.claude/rules/` — nine behaviour rules, of which `session-budget.md` is the one that makes the
-  limits hook worth having. The hook supplies numbers; the rule is what tells the model to act on
-  them. **Install it too, or the numbers are decoration.** The other eight are independent of the
-  hooks; `README.md` says what each is for.
+- `.claude/rules/` — nine behaviour rules that decide how the model works: `session-budget`,
+  `before-starting-work`, `working-autonomously`, `architectural-forks`, `code-quality`,
+  `finishing-work`, `merge-conflicts`, `response-style`, `web-search-when-in-doubt`. `README.md`
+  describes each one in full.
 - `.claude/agents/change-reviewer.md` — the independent grading pass the `finishing-work` rule
-  requires. Install it whenever you install that rule; the limits gate exempts it by name.
-- `.claude/skills/dev-ai-prompt-generation/` — a skill on writing prompts, skills and rules.
-  Independent of everything else here.
+  launches: it gets the diff and the requirement and nothing else.
+- `.claude/skills/dev-ai-prompt-generation/` — a hub plus 30 reference files on writing prompts,
+  skills, rules and `CLAUDE.md`. Independent of everything else here.
+- `.claude/settings.json`, `.claude/usage-limits-config.json`, `.gitattributes` — the wiring, the one
+  file meant to be edited, and the two attribute lines whose absence only breaks somebody else's
+  machine.
+
+**The rules are a set, not a menu.** Eight of the nine link to each other by name, and
+`change-reviewer.md` applies `code-quality.md` by name — so a rule copied on its own points the model
+at files that are not there, and nothing announces it. Copy them together, or drop one deliberately
+knowing what refers to it. Only `web-search-when-in-doubt.md` refers to nothing else.
+
+**Across the groups there are four ties, and they are the only ones.** `session-budget.md` is the
+other half of the limits hook — the hook supplies numbers, the rule is what tells the model to act on
+them, so **install it too, or the numbers are decoration.** `finishing-work.md` launches
+`change-reviewer` by name, so install that subagent whenever you install that rule, or its grading
+stage silently cannot run. The limits gate exempts `change-reviewer` by name. And `finishing-work.md`
+expects the audit log `work-audit` writes to be staged with the work wherever the project tracks it.
+Otherwise the hooks, the rules and the skill are independent — take what is wanted.
 
 **There is no runtime to install.** No Node, no Python, no Go. The binaries are committed on purpose.
 
-`README.md` is the full description — what every line of the display means, how the working week is
-computed, what the gate does, every config key. Read it if you need to explain the hooks or change
-their behaviour. **This file is only about installing them into another project.**
+`README.md` is the full description of every component — what every line of the display means, how the
+working week is computed, what the gate does, every config key, what each rule, the subagent and the
+skill are for. Read it if you need to explain any of this or change its behaviour. **This file is only
+about installing it into another project.**
 
 ---
 
@@ -47,9 +65,9 @@ cp scripts/work-audit-darwin-arm64 scripts/work-audit-linux-amd64 scripts/work-a
 cp scripts/play-sound-darwin-arm64 scripts/play-sound-linux-amd64 scripts/play-sound-windows-amd64.exe       <target>/scripts/
 ```
 
-The other eight rules, the subagent and the skill are optional and independent of the hooks. Ask
-whether they are wanted before copying them — they change how the model behaves, and eight rules is
-about 1,400 lines in every session's context:
+The other eight rules, the subagent and the skill are optional as far as the hooks go. Ask whether
+they are wanted before copying them — they change how the model behaves, and eight rules is about
+1,400 lines in every session's context:
 
 ```sh
 cp .claude/rules/*.md          <target>/.claude/rules/
@@ -59,6 +77,12 @@ cp -r .claude/skills/dev-ai-prompt-generation <target>/.claude/skills/
 
 `change-reviewer.md` is not optional if `finishing-work.md` is installed — that rule launches it by
 name at its grading stage, and without the file the pass silently cannot run.
+
+**Copying a subset leaves dangling references.** Eight of the nine rules link to each other by name;
+`session-budget.md` alone, as the block above copies it, points at `finishing-work.md`, which is not
+there. That costs nothing at run time — the model simply cannot follow a link — but say so in the
+report, so nobody assumes the rule is complete. Copying all nine is the clean option; copying a
+subset is a decision to state, not a saving to take quietly.
 
 **If the target already has these hooks**, overwrite the launchers, the binaries and the sources, but
 **do not overwrite `.claude/usage-limits-config.json`** — it holds that project's own thresholds.
