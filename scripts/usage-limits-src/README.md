@@ -105,7 +105,7 @@ Terminal gets the 256-colour palette.
 The other figures — the limits' and time gauges' percentages, the reset times and the figures of a
 wait — are amber, the TIME/WORK gauges cyan, and `NO_COLOR` turns the colour off. Token counts use
 lower-case units everywhere, whole in thousands and millions and to one decimal in billions when
-there is one: `719k/1m`, `137m`, `1.1b`. The top-level README says more.
+there is one: `719k/1m`, `137m`, `1.1b`. The top-level REFERENCE.md says more.
 
 ## The working week
 
@@ -129,10 +129,10 @@ Both live under `working_week` in the config, one entry per weekday:
 }
 ```
 
-Shipped as Monday to Friday at 100 and the weekend at 20, noon to eight — which makes the week
-**43.2 working hours** long rather than 168, and means the bar stands still overnight and moves
-again at noon. Only the ratios between the percentages matter; a day given only a percentage keeps
-the default hours and one given only hours keeps the default percentage.
+The built-in default is Monday to Friday at 100 and the weekend at 20, noon to eight — which makes
+the week **43.2 working hours** long rather than 168, and means the bar stands still overnight and
+moves again at noon. Only the ratios between the percentages matter; a day given only a percentage
+keeps the default hours and one given only hours keeps the default percentage.
 
 A day whose `to` equals its `from` is not worked. A `to` **earlier** than its `from` is refused
 rather than wrapped past midnight — a night shift is a different decision, and quietly accepting one

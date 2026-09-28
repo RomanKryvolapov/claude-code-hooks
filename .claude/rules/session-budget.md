@@ -37,7 +37,7 @@ for the person.
   `gone`:** used ahead of gone means the budget is running out faster than the clock and will not
   last to the reset. The weekly limits count the **working week** instead of the calendar — only the
   hours the config's `working_week` says are worked, each weekday weighted by its own percentage
-  (shipped as noon to eight on weekdays and a fifth of that at the weekend) — because nobody spends
+  (noon to eight on weekdays, with the weekend counting for far less) — because nobody spends
   budget at four in the morning; a week measured on the calendar ran ahead of the spend every Monday
   and behind it every Friday. It is a display scale only: resets, burn, forecast, zones and the gate
   all stay on real clock time.

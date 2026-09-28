@@ -18,7 +18,7 @@ to install — no Node, no Python, no Go.
 - **`play-sound`** — a sound when Claude Code stops or needs attention.
 - **`.claude/rules/`** — nine rules that decide how the model works: `session-budget`,
   `before-starting-work`, `working-autonomously`, `architectural-forks`, `code-quality`,
-  `finishing-work`, `merge-conflicts`, `response-style` and `web-search-when-in-doubt`. README.md
+  `finishing-work`, `merge-conflicts`, `response-style` and `web-search-when-in-doubt`. REFERENCE.md
   describes each one in full.
 - **`.claude/agents/change-reviewer.md`** — the independent grading pass `finishing-work` launches:
   it gets the diff and the requirement and nothing else, and is told to refute rather than confirm.
@@ -51,10 +51,11 @@ you: the files to copy, the `settings.json` to merge, how to make the rules actu
 invisible steps that break the hooks on somebody else's machine (line endings and the executable
 bit), and how to check the install took.
 
-**To understand or change what any of it does, read [README.md](README.md).** It describes every
-component in full — every line of the display, how the working week is computed, the gate's
+**To understand or change what any of it does, read [REFERENCE.md](REFERENCE.md).** It describes
+every component in full — every line of the display, how the working week is computed, the gate's
 thresholds, what the audit log records, every configuration key, and what each rule, the subagent and
-the skill are for.
+the skill are for. [README.md](README.md) is the short, plain overview for a person meeting the
+project.
 
 The Go sources are `scripts/usage-limits-src/`, `scripts/work-audit-src/` and
 `scripts/play-sound-src/`. Every tunable default of the limits hook is declared in

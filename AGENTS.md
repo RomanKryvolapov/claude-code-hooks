@@ -13,7 +13,7 @@ subagent, a skill about writing prompts, and the `settings.json` that wires it t
 - `play-sound` — plays a sound when Claude Code stops or needs attention.
 - `.claude/rules/` — nine behaviour rules that decide how the model works: `session-budget`,
   `before-starting-work`, `working-autonomously`, `architectural-forks`, `code-quality`,
-  `finishing-work`, `merge-conflicts`, `response-style`, `web-search-when-in-doubt`. `README.md`
+  `finishing-work`, `merge-conflicts`, `response-style`, `web-search-when-in-doubt`. `REFERENCE.md`
   describes each one in full.
 - `.claude/agents/change-reviewer.md` — the independent grading pass the `finishing-work` rule
   launches: it gets the diff and the requirement and nothing else.
@@ -38,10 +38,10 @@ Otherwise the hooks, the rules and the skill are independent — take what is wa
 
 **There is no runtime to install.** No Node, no Python, no Go. The binaries are committed on purpose.
 
-`README.md` is the full description of every component — what every line of the display means, how the
-working week is computed, what the gate does, every config key, what each rule, the subagent and the
-skill are for. Read it if you need to explain any of this or change its behaviour. **This file is only
-about installing it into another project.**
+`REFERENCE.md` is the full description of every component — what every line of the display means,
+how the working week is computed, what the gate does, every config key, what each rule, the subagent
+and the skill are for. Read it if you need to explain any of this or change its behaviour;
+`README.md` is the short overview. **This file is only about installing it into another project.**
 
 ---
 
