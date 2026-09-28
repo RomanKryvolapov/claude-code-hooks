@@ -12,7 +12,9 @@
 //
 // Data source: https://api.anthropic.com/api/oauth/usage (account-global,
 // covers ALL sessions on this subscription), authenticated with the local
-// OAuth token that `claude login` stored in ~/.claude/.credentials.json.
+// OAuth token that `claude login` stored: .credentials.json in the config dir
+// (~/.claude, or CLAUDE_CONFIG_DIR) on Linux and Windows, the login Keychain on
+// macOS. See readAccessToken.
 //
 // The injection and status-line modes print the same picture, so one glance reads
 // everywhere. Three lines: CONTEXT (how full this session's context window is, one
@@ -38,13 +40,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,6 +128,16 @@ func homeDir() string {
 		return ""
 	}
 	return h
+}
+
+// configDir is where Claude Code keeps its user-level files: CLAUDE_CONFIG_DIR when set, ~/.claude
+// otherwise. The login, the user settings the model pin is read from and this hook's own cache all
+// follow it, so a session started with another config dir reads its own account.
+func configDir() string {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(homeDir(), ".claude")
 }
 
 // --- data structures ----------------------------------------------------------
@@ -207,17 +223,87 @@ func getCacheObject() *cacheFile {
 	return &c
 }
 
-func fetchUsage() json.RawMessage {
-	b, err := os.ReadFile(credPath)
+// storedLogin is the part of Claude Code's saved login this hook uses.
+type storedLogin struct {
+	AccessToken string `json:"accessToken"`
+	ExpiresAt   int64  `json:"expiresAt"` // epoch ms
+}
+
+// parseLogin reads the claudeAiOauth block of a credentials document, whichever store it came from.
+func parseLogin(b []byte) (storedLogin, bool) {
+	var doc struct {
+		ClaudeAiOauth storedLogin `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(stripBOM(b), &doc) != nil || doc.ClaudeAiOauth.AccessToken == "" {
+		return storedLogin{}, false
+	}
+	return doc.ClaudeAiOauth, true
+}
+
+// readAccessToken returns the OAuth token `claude login` stored. On Linux and Windows that is
+// .credentials.json in the config dir. On macOS Claude Code keeps it in the login Keychain and writes
+// the file only when a Keychain write fails (an SSH session, a locked keychain), so there the file can
+// be a stale leftover: both stores are read and the login that expires last wins.
+func readAccessToken() string {
+	var logins []storedLogin
+	if runtime.GOOS == "darwin" {
+		if l, ok := parseLogin(keychainLogin()); ok {
+			logins = append(logins, l)
+		}
+	}
+	if b, err := os.ReadFile(credPath); err == nil {
+		if l, ok := parseLogin(b); ok {
+			logins = append(logins, l)
+		}
+	}
+	return freshestToken(logins)
+}
+
+// freshestToken picks the login that expires last; on a tie the store read first, the Keychain, wins.
+func freshestToken(logins []storedLogin) string {
+	best := -1
+	for i, l := range logins {
+		if best < 0 || l.ExpiresAt > logins[best].ExpiresAt {
+			best = i
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	return logins[best].AccessToken
+}
+
+// keychainService is the generic-password item Claude Code writes on macOS: "Claude Code-credentials",
+// or, when CLAUDE_CONFIG_DIR is set, that name plus "-" and the first 8 hex digits of the SHA-256 of
+// the variable's value exactly as exported. The suffix is observed behaviour, not documented — the docs
+// only say the item is keyed to the directory. There is deliberately no fallback to the unsuffixed
+// item: it holds whichever account the default config dir is signed in to.
+func keychainService() string {
+	const base = "Claude Code-credentials"
+	d := os.Getenv("CLAUDE_CONFIG_DIR")
+	if d == "" {
+		return base
+	}
+	sum := sha256.Sum256([]byte(d))
+	return base + "-" + hex.EncodeToString(sum[:])[:8]
+}
+
+// keychainLogin reads that item through the system `security` tool, which needs no cgo. Bounded by a
+// timeout, because a locked keychain must not hold a hook; any failure — no item, no GUI session over
+// SSH — returns nil and the file is tried on its own.
+func keychainLogin() []byte {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", keychainService(), "-w").Output()
 	if err != nil {
 		return nil
 	}
-	var cred struct {
-		ClaudeAiOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if json.Unmarshal(stripBOM(b), &cred) != nil || cred.ClaudeAiOauth.AccessToken == "" {
+	return bytes.TrimSpace(out)
+}
+
+func fetchUsage() json.RawMessage {
+	token := readAccessToken()
+	if token == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -226,7 +312,7 @@ func fetchUsage() json.RawMessage {
 	if err != nil {
 		return nil
 	}
-	req.Header.Set("Authorization", "Bearer "+cred.ClaudeAiOauth.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1697,7 +1783,7 @@ func markGateAsked(sessionID string) {
 }
 
 func loadConfig() {
-	claudeDir = filepath.Join(homeDir(), ".claude")
+	claudeDir = configDir()
 	cachePath = filepath.Join(claudeDir, "usage-limits-cache.json")
 	gateAsksPath = filepath.Join(claudeDir, "usage-limits-gate-asks.json")
 	credPath = filepath.Join(claudeDir, ".credentials.json")

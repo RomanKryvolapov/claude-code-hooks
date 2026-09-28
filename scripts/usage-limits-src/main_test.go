@@ -963,3 +963,29 @@ func TestBudgetRuleInstalled(t *testing.T) {
 		t.Error("claimed a rule with no project to look in")
 	}
 }
+
+// A login both the Keychain and the file hold: the one that expires last is the live one, and on a
+// tie the Keychain, read first, wins.
+func TestFreshestTokenPrefersTheLaterExpiry(t *testing.T) {
+	if got := freshestToken([]storedLogin{{AccessToken: "keychain", ExpiresAt: 100}, {AccessToken: "file", ExpiresAt: 200}}); got != "file" {
+		t.Errorf("later expiry: got %q, want file", got)
+	}
+	if got := freshestToken([]storedLogin{{AccessToken: "keychain", ExpiresAt: 100}, {AccessToken: "file", ExpiresAt: 100}}); got != "keychain" {
+		t.Errorf("tie: got %q, want keychain", got)
+	}
+	if got := freshestToken(nil); got != "" {
+		t.Errorf("no login: got %q, want empty", got)
+	}
+}
+
+// The Keychain item name follows CLAUDE_CONFIG_DIR the way Claude Code keys it.
+func TestKeychainServiceFollowsConfigDir(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	if got := keychainService(); got != "Claude Code-credentials" {
+		t.Errorf("default: got %q", got)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "/Users/me/.claude-work")
+	if got := keychainService(); got != "Claude Code-credentials-1e91dd84" {
+		t.Errorf("config dir: got %q", got)
+	}
+}

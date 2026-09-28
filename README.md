@@ -89,8 +89,10 @@ is why [AGENTS.md](AGENTS.md) carries a step that checks the install took.
 
 A Claude subscription has three kinds of limit running at once: a **5-hour session window**, a
 **7-day window**, and a **per-model weekly bucket** for some models. They are account-global — every
-Claude session you have open shares them — and nothing inside a coding session tells you where you
-stand. So you either stop early to be safe, or you run into a wall in the middle of something.
+Claude session you have open shares them. Claude Code shows them to you in `/usage` and passes the
+5-hour and 7-day windows, though not the per-model bucket, to a status line script; the model, which
+decides how much work to take on, sees none of it. So you either stop early to be safe, or you run
+into a wall in the middle of something.
 
 This hook reads the real numbers from Anthropic's own usage endpoint and shows them in one picture,
 in three places: injected into the model's context at session start and on every prompt (so the model
@@ -318,9 +320,12 @@ notification hook must never interrupt a session.
   silent, the status line prints `LIMITS -> N/A`, JSON prints an error document. A missing binary, a
   broken config, an expired token, no network — all end the same way.
 - **They send nothing anywhere.** The only outbound request is `usage-limits` asking
-  `api.anthropic.com`, authenticated with the OAuth token `claude login` already stored in
-  `~/.claude/.credentials.json`. No API key is needed and the token is never printed.
-- **They write almost nothing.** `usage-limits` writes two files under `~/.claude`: a usage cache and
+  `api.anthropic.com`, authenticated with the OAuth token `claude login` already stored — in
+  `.credentials.json` under `~/.claude` (or `CLAUDE_CONFIG_DIR`) on Linux and Windows, in the login
+  Keychain on macOS, read through the system `security` tool. No API key is needed and the token is
+  never printed.
+- **They write almost nothing.** `usage-limits` writes two files under `~/.claude` (or
+  `CLAUDE_CONFIG_DIR`): a usage cache and
   a note of whether the gate has asked this session. `work-audit` writes its own log under
   `management/logs/`, plus two throwaway counters in the OS temp folder. `play-sound` writes nothing.
 
