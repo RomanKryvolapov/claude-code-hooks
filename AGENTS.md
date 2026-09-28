@@ -104,7 +104,8 @@ appending a second one.
 {
   "statusLine": {
     "type": "command",
-    "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/usage-limits\" --mode statusline"
+    "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/usage-limits\" --mode statusline",
+    "refreshInterval": 30
   },
   "hooks": {
     "SessionStart": [
@@ -338,7 +339,8 @@ CLAUDE_PROJECT_DIR=<target> <target>/.claude/hooks/usage-limits --mode statuslin
 ```
 
 Two stacked lines per limit is a working install. `LIMITS -> N/A` means it ran but has no usage data
-— usually not signed in. **Empty output means the launcher found no binary**: check that the
+— usually not signed in. Run by hand like this it is not handed what Claude Code gives a real
+status line, so the `CONTEXT` line, with the session's tokens beside it, appears only in a session. **Empty output means the launcher found no binary**: check that the
 binaries landed in one of `scripts/`, `scripts/claude-code/`, `.claude/bin/`, and that they are
 executable.
 

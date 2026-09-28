@@ -662,13 +662,14 @@ func withConfigFile(t *testing.T, body string, fn func()) {
 		step     int
 		problems []string
 		z5, z7   map[string]float64
+		ahead    float64
 	}{fetchTTLSec, gateEnabled, contextWindowTokens, timeZoneName, weekLoc, workingWeek, searchStepMin,
-		configProblems, copyThresholds(z5), copyThresholds(z7)}
+		configProblems, copyThresholds(z5), copyThresholds(z7), limitAheadRed}
 	defer func() {
 		fetchTTLSec, gateEnabled, contextWindowTokens = prev.ttl, prev.gate, prev.ctx
 		timeZoneName, weekLoc = prev.zone, prev.loc
 		workingWeek, searchStepMin, configProblems = prev.week, prev.step, prev.problems
-		z5, z7 = prev.z5, prev.z7
+		z5, z7, limitAheadRed = prev.z5, prev.z7, prev.ahead
 	}()
 	configProblems = nil
 	t.Setenv("CLAUDE_PROJECT_DIR", dir)
@@ -699,13 +700,14 @@ func TestLoadConfigAppliesEverySetting(t *testing.T) {
       "fetch_ttl_sec": 5,
       "gate_enabled": false,
       "context_window_tokens": 200000,
+      "limit_ahead_red_pct": 35,
       "time_zone": "Asia/Tokyo",
       "working_week": { "mon": { "percent": 40, "from": "09:00", "to": "17:00" } },
       "zones": { "session": { "YELLOW": 11, "ORANGE": 12, "RED": 13 },
                  "weekly":  { "YELLOW": 21, "ORANGE": 22, "RED": 23 } }
     }`, func() {
-		if fetchTTLSec != 5 || gateEnabled || contextWindowTokens != 200000 {
-			t.Errorf("ttl %v, gate %v, context %v", fetchTTLSec, gateEnabled, contextWindowTokens)
+		if fetchTTLSec != 5 || gateEnabled || contextWindowTokens != 200000 || limitAheadRed != 35 {
+			t.Errorf("ttl %v, gate %v, context %v, red lead %v", fetchTTLSec, gateEnabled, contextWindowTokens, limitAheadRed)
 		}
 		if timeZoneName != "Asia/Tokyo" || weekLocation().String() != "Asia/Tokyo" {
 			t.Errorf("zone %q resolved to %v", timeZoneName, weekLocation())
@@ -728,11 +730,11 @@ func TestLoadConfigAppliesEverySetting(t *testing.T) {
 func TestLoadConfigRefusesNulls(t *testing.T) {
 	withConfigFile(t, `{
       "fetch_ttl_sec": null, "gate_enabled": null, "context_window_tokens": null,
-      "time_zone": null, "working_week": null, "zones": null
+      "limit_ahead_red_pct": null, "time_zone": null, "working_week": null, "zones": null
     }`, func() {
-		if fetchTTLSec != 60 || !gateEnabled || contextWindowTokens != 1_000_000.0 {
-			t.Errorf("a null overwrote a default: ttl %v, gate %v, context %v",
-				fetchTTLSec, gateEnabled, contextWindowTokens)
+		if fetchTTLSec != 60 || !gateEnabled || contextWindowTokens != 1_000_000.0 || limitAheadRed != 20 {
+			t.Errorf("a null overwrote a default: ttl %v, gate %v, context %v, red lead %v",
+				fetchTTLSec, gateEnabled, contextWindowTokens, limitAheadRed)
 		}
 		if timeZoneName != defaultTimeZone {
 			t.Errorf("a null zone left %q", timeZoneName)
@@ -740,7 +742,8 @@ func TestLoadConfigRefusesNulls(t *testing.T) {
 		if workingWeek != shippedDefaultWeek() {
 			t.Errorf("a null week left %+v", workingWeek)
 		}
-		for _, name := range []string{"fetch_ttl_sec", "gate_enabled", "time_zone", "working_week", "zones"} {
+		for _, name := range []string{"fetch_ttl_sec", "gate_enabled", "context_window_tokens", "limit_ahead_red_pct",
+			"time_zone", "working_week", "zones"} {
 			if !problemsMentioning(name) {
 				t.Errorf("%s was nulled without a word: %v", name, configProblems)
 			}
@@ -761,18 +764,19 @@ func TestLoadConfigIsolatesOneBadSetting(t *testing.T) {
 		"fetch_ttl_sec":         `"often"`,
 		"gate_enabled":          `"yes"`,
 		"context_window_tokens": `"lots"`,
+		"limit_ahead_red_pct":   `"20"`,
 		"time_zone":             `12`,
 		"working_week":          `"weekdays"`,
 		"zones":                 `"strict"`,
 	}
 	for field, value := range bad {
 		body := `{"fetch_ttl_sec": 5, "gate_enabled": false, "context_window_tokens": 200000,
-                  "time_zone": "Asia/Tokyo",
+                  "limit_ahead_red_pct": 35, "time_zone": "Asia/Tokyo",
                   "working_week": {"mon": {"percent": 40}},
                   "zones": {"session": {"YELLOW": 11}}}`
 		body = strings.Replace(body, `"`+field+`": `+map[string]string{
 			"fetch_ttl_sec": "5", "gate_enabled": "false", "context_window_tokens": "200000",
-			"time_zone": `"Asia/Tokyo"`, "working_week": `{"mon": {"percent": 40}}`,
+			"limit_ahead_red_pct": "35", "time_zone": `"Asia/Tokyo"`, "working_week": `{"mon": {"percent": 40}}`,
 			"zones": `{"session": {"YELLOW": 11}}`,
 		}[field], `"`+field+`": `+value, 1)
 		withConfigFile(t, body, func() {
@@ -788,6 +792,12 @@ func TestLoadConfigIsolatesOneBadSetting(t *testing.T) {
 			}
 			if field != "context_window_tokens" && contextWindowTokens != 200000 {
 				t.Errorf("%s took context_window_tokens with it (%v)", field, contextWindowTokens)
+			}
+			if field != "limit_ahead_red_pct" && limitAheadRed != 35 {
+				t.Errorf("%s took limit_ahead_red_pct with it (%v)", field, limitAheadRed)
+			}
+			if field == "limit_ahead_red_pct" && limitAheadRed != 20 {
+				t.Errorf("a red lead written as a string was applied anyway (%v)", limitAheadRed)
 			}
 			if field != "time_zone" && timeZoneName != "Asia/Tokyo" {
 				t.Errorf("%s took time_zone with it (%q)", field, timeZoneName)
@@ -934,6 +944,27 @@ func TestLoadConfigRefusesOutOfRangeNumbers(t *testing.T) {
 		}
 		if !problemsMentioning("context_window_tokens") || !problemsMentioning("fetch_ttl_sec") {
 			t.Errorf("both passed without a word: %v", configProblems)
+		}
+	})
+}
+
+// The lead that turns a LIMIT gauge red is one percentage less another, so it lies above 0 and at most
+// 100. At zero the lead is divided by nothing, below it the scale runs backwards, and past a hundred it
+// is never reached: each is named and ignored. A hundred itself is a setting.
+func TestLoadConfigRefusesARedLeadOutsideTheScale(t *testing.T) {
+	for _, bad := range []string{"0", "-5", "100.5"} {
+		withConfigFile(t, `{"limit_ahead_red_pct": `+bad+`}`, func() {
+			if limitAheadRed != 20 {
+				t.Errorf("%s was applied: %v", bad, limitAheadRed)
+			}
+			if !problemsMentioning(`"limit_ahead_red_pct"`) || !problemsMentioning("so "+bad+" was ignored") {
+				t.Errorf("%s passed without a word: %v", bad, configProblems)
+			}
+		})
+	}
+	withConfigFile(t, `{"limit_ahead_red_pct": 100}`, func() {
+		if limitAheadRed != 100 || len(configProblems) != 0 {
+			t.Errorf("the top of the scale was refused: %v %v", limitAheadRed, configProblems)
 		}
 	})
 }

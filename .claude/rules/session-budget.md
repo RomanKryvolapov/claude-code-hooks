@@ -24,28 +24,32 @@ work inline — just because budget was available.
 
 ## Live numbers (from the hook)
 
-Project hooks (`.claude/hooks/usage-limits`, wired in `.claude/settings.json`) inject live
-subscription usage: a `[session-budget]` block at session start and a `[limits]` block on every
-prompt. Both are the same picture as the status line: a `CONTEXT` line — how much of this session's
-context window the last request carried, with its own gauge (one cell per percent) and a
-`used/window` counter; it is not a subscription limit, it is the reason a long session gets
-compacted — and under it the limits side by side (5-hour window, 7-day window, then every per-model
-weekly bucket), each a pair of stacked lines: `LIMIT` (percentage of the budget spent, with its
-gauge and the reset time) over the share of the window already gone (same gauge, and how long is
-left). **Read one against the other:** a fuller `LIMIT` bar than the one under it means the budget
-is running out faster than the clock and will not last to the reset. That bottom bar is captioned
-`TIME` on the 5-hour row, which measures calendar time — and `WORK` on the weekly rows, which
-measure **working** time: only the hours the config's `working_week` says are worked count, each
-weekday for as much as its own percentage says. Shipped as noon to eight on weekdays and a fifth of
-that at the weekend, which makes the week 43 working hours long rather than 168, so the bar stands
-still overnight. It exists so the comparison means something: nobody spends budget at four in the
-morning, and a weekend eats two of the seven days while spending almost none — which used to leave
-the bar ahead of the spend every Monday and behind it every Friday. Where a day begins is fixed by
-`time_zone` in the same config rather than by the host clock, and anything in that config the hook
-cannot use is named on a `CONFIG` line rather than dropped in silence. **It is a display scale
-only** — every reset time, the `RESET AFTER` countdown, the burn rate, the forecast, the zones and
-the gate all stay on real clock time. Under them come a `BURN` line (rate, forecast, pace) and a
-`ZONE` line (zone, binding limiter, what it allows); session start adds a `MODEL` line.
+Project hooks (`.claude/hooks/usage-limits`, wired in `.claude/settings.json`) hand you live
+subscription usage as a `<usage_limits>` block at session start and on every prompt: data, in the
+format its root states, with no instructions in it. The status line draws the same figures as gauges
+for the person.
+
+- `<context used="847k of 1m (85%)"/>` — how much of this session's context window the last request
+  carried. Not a subscription limit: it is why a long session gets compacted, and every request
+  re-reads it.
+- `<limit … used="58%" gone="69% of the window" resets="23:50, in 1:33"/>` — one per limit: the
+  5-hour window, the 7-day window, then every per-model weekly bucket. **Read `used` against
+  `gone`:** used ahead of gone means the budget is running out faster than the clock and will not
+  last to the reset. The weekly limits count the **working week** instead of the calendar — only the
+  hours the config's `working_week` says are worked, each weekday weighted by its own percentage
+  (shipped as noon to eight on weekdays and a fifth of that at the weekend) — because nobody spends
+  budget at four in the morning; a week measured on the calendar ran ahead of the spend every Monday
+  and behind it every Friday. It is a display scale only: resets, burn, forecast, zones and the gate
+  all stay on real clock time.
+- `<tokens>` — this session's tokens, and the account's (every session on this machine) in the
+  5-hour and weekly windows. `fresh` is new input, output and cache writes; `cached` is what was read
+  back from the prompt cache, at a tenth of the price, and grows by the whole context on every
+  request.
+- `<burn>` (rate, forecast, pace — spend over the share of the window gone), `<zone>` (level, the
+  binding limiter, and what it allows), and at session start `<model>`. A `<config_problem>` names
+  anything in the config the hook could not use. A `<stale>` element means the usage endpoint has
+  not answered since the time it names: the figures are that old, and since spend only grows inside a
+  window, read them as a floor rather than the current state.
 
 The hook is a **cross-platform Go binary** — a thin POSIX launcher (`.claude/hooks/usage-limits`)
 runs the prebuilt binary for the current OS, one per OS committed in this project's scripts folder

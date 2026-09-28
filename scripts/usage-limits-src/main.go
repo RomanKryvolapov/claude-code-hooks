@@ -16,20 +16,23 @@
 // (~/.claude, or CLAUDE_CONFIG_DIR) on Linux and Windows, the login Keychain on
 // macOS. See readAccessToken.
 //
-// The injection and status-line modes print the same picture, so one glance reads
-// everywhere. Three lines: CONTEXT (how full this session's context window is, one
-// gauge cell per percent), then the limits side by side (5-hour window, 7-day window,
-// then each per-model weekly bucket) as LIMIT (budget spent) over the share of the window
-// gone — comparing the two says whether the spend is ahead of the clock. That second gauge
+// The status line draws a picture for a person. Three lines: CONTEXT (how full this session's
+// context window is, one gauge cell per percent), then the limits side by side (5-hour window,
+// 7-day window, then each per-model weekly bucket) as LIMIT (budget spent) over the share of the
+// window gone — comparing the two says whether the spend is ahead of the clock. That second gauge
 // is calendar time on the 5-hour row (captioned TIME) and working time on the weekly rows
-// (captioned WORK), weighted per weekday; see dayWeightPct.
+// (captioned WORK), weighted per weekday; see workingWeek. It is coloured, fitted to the
+// terminal, and carries the prompt cache and token counts beside CONTEXT; see statusline.go.
+//
+// The model is handed the same figures as data — XML, with no gauge; see modelblock.go — plus the
+// token counts and the elements it acts on: burn, zone, and the model at session start.
 //
 // Modes (CLI flags, case-insensitive; PowerShell-style -Mode also accepted):
-//   --mode inject --event SessionStart      table + BURN/MODEL/ZONE rows -> model context
-//   --mode inject --event UserPromptSubmit  table + BURN/ZONE rows       -> model context
+//   --mode inject --event SessionStart      <usage_limits> block, with <model> -> model context
+//   --mode inject --event UserPromptSubmit  <usage_limits> block                -> model context
 //   --mode gate                             PreToolUse Agent|Task|Workflow gate
 //   --mode json [--model <id>]              full computed state as JSON
-//   --mode statusline                       the limits table alone
+//   --mode statusline                       the picture, painted, with cache and token counts
 //
 // Never breaks the session: on any error it exits 0 — the injection and gate
 // modes stay silent, statusline and JSON print a short unavailable marker.
@@ -116,10 +119,11 @@ func (a argSet) numOr(key string, def float64) float64 {
 
 // Paths, resolved in loadConfig. Everything this hook can be tuned by lives in constants.go.
 var (
-	claudeDir    string
-	cachePath    string
-	gateAsksPath string
-	credPath     string
+	claudeDir      string
+	cachePath      string
+	gateAsksPath   string
+	tokenCachePath string
+	credPath       string
 )
 
 func homeDir() string {
@@ -173,10 +177,17 @@ type sample struct {
 	Bk map[string]float64 `json:"bk"`
 }
 
+// cacheFile holds only what the usage API said and what was measured from it. A figure Claude Code
+// handed the status line is never written here: the gate and the injected block read this file
+// too, and they cannot tell where a number came from.
 type cacheFile struct {
 	FetchedAt string          `json:"fetched_at"`
 	Raw       json.RawMessage `json:"raw"`
 	Samples   []sample        `json:"samples"`
+	// TriedAt is the last time the API was asked, answered or not. It is asked at most once per
+	// fetch period either way: an endpoint that has started refusing — it rate-limits — is not
+	// asked again by every status-line refresh of every open session.
+	TriedAt string `json:"tried_at,omitempty"`
 }
 
 type scopedBucket struct {
@@ -489,9 +500,18 @@ type state struct {
 	minToBucketExhaust, minToBucketRst float64
 	bucketResetLocal                   *time.Time
 	sampleCount                        int
+	// fetchedAt is when the usage API gave the figures this state is built on; zero when it never
+	// has. stale says it has not answered for longer than two fetch periods, so those figures may
+	// no longer hold — except where Claude Code's own figures, which only the status line is handed,
+	// stood in for them.
+	fetchedAt time.Time
+	stale     bool
 }
 
-func getState(args argSet, activeModelID string) *state {
+// getState builds everything the outputs draw from the usage API's figures. live is the 5-hour and
+// 7-day figures Claude Code handed the status line, or nil everywhere else; they stand in for the
+// API's only when the API's are stale or missing, and are never written to the cache.
+func getState(args argSet, activeModelID string, live *usageRaw) *state {
 	overrideS5 := args.numOr("overrides5", -1)
 	overrideS7 := args.numOr("overrides7", -1)
 	overrideBucket := args.numOr("overridebucket", -1)
@@ -500,6 +520,7 @@ func getState(args argSet, activeModelID string) *state {
 	nowMs := float64(now.UnixMilli())
 	cache := getCacheObject()
 	var rawBytes json.RawMessage
+	var fetchedAt time.Time
 	fetchedFresh := false
 
 	if cache != nil && cache.FetchedAt != "" {
@@ -507,22 +528,63 @@ func getState(args argSet, activeModelID string) *state {
 			age := (nowMs - float64(ft.UnixMilli())) / 1000
 			if age >= 0 && age < float64(fetchTTLSec) {
 				rawBytes = cache.Raw
+				fetchedAt = ft
 			}
 		}
 	}
+	triedAt := ""
+	if cache != nil {
+		triedAt = cache.TriedAt
+	}
 	if rawBytes == nil {
-		rawBytes = fetchUsage()
+		askedRecently := false
+		if t, ok := parseTime(triedAt); ok {
+			since := now.Sub(t)
+			askedRecently = since >= 0 && since < time.Duration(fetchTTLSec)*time.Second
+		}
+		if !askedRecently {
+			rawBytes = fetchUsage()
+			triedAt = now.Format(time.RFC3339Nano)
+		}
 		if rawBytes != nil {
 			fetchedFresh = true
+			fetchedAt = now
 		} else if cache != nil {
 			rawBytes = cache.Raw // network down -> stale cache beats nothing
+			fetchedAt, _ = parseTime(cache.FetchedAt)
 		}
 	}
-	if rawBytes == nil {
-		return nil
-	}
+	// Stale means the API did not answer this time and what it said last is older than two fetch
+	// periods — one failed refresh is a blip, two in a row are an outage. The injected block tells
+	// the model so; the status line swaps in Claude Code's own figures where it has them.
+	stale := !fetchedFresh && (fetchedAt.IsZero() || now.Sub(fetchedAt) > 2*time.Duration(fetchTTLSec)*time.Second)
+
 	var raw usageRaw
-	if json.Unmarshal(rawBytes, &raw) != nil || raw.FiveHour == nil {
+	if rawBytes != nil {
+		_ = json.Unmarshal(rawBytes, &raw)
+	}
+	// Claude Code's own figure stands in for a window the API's figures cannot vouch for: all of
+	// them while they are stale, and one the API left out even when it answered.
+	liveFive, liveSeven := false, false
+	if live != nil {
+		if live.FiveHour != nil && (stale || raw.FiveHour == nil) {
+			raw.FiveHour, liveFive = live.FiveHour, true
+		}
+		if live.SevenDay != nil && (stale || raw.SevenDay == nil) {
+			raw.SevenDay, liveSeven = live.SevenDay, true
+		}
+	}
+	if raw.FiveHour == nil {
+		// Nothing to draw from, but the attempt is still written down, so that the API is not
+		// asked again before its time.
+		if cache == nil {
+			cache = &cacheFile{}
+		}
+		if triedAt != cache.TriedAt {
+			kept := *cache
+			kept.TriedAt = triedAt
+			saveCache(kept)
+		}
 		return nil
 	}
 
@@ -718,17 +780,24 @@ func getState(args argSet, activeModelID string) *state {
 	}
 
 	// --- persist cache ----------------------------------------------------------
-	func() {
-		out := cacheFile{FetchedAt: now.Format(time.RFC3339Nano), Raw: rawBytes, Samples: kept}
-		if !fetchedFresh && cache != nil {
-			out.FetchedAt = cache.FetchedAt
+	// The cache holds what the API said, when it was last asked, and nothing else. Where a live
+	// figure stood in, the samples above were pruned and extended against it, so the ones read are
+	// kept instead.
+	samples := kept
+	if liveFive || liveSeven {
+		samples = nil
+		if cache != nil {
+			samples = cache.Samples
 		}
-		if fi, err := os.Stat(claudeDir); err == nil && fi.IsDir() {
-			if b, err := json.Marshal(out); err == nil {
-				_ = os.WriteFile(cachePath, b, 0o600)
-			}
-		}
-	}()
+	}
+	out := cacheFile{Raw: rawBytes, Samples: samples, TriedAt: triedAt}
+	switch {
+	case fetchedFresh:
+		out.FetchedAt = now.Format(time.RFC3339Nano)
+	case cache != nil:
+		out.FetchedAt = cache.FetchedAt
+	}
+	saveCache(out)
 
 	return &state{
 		s5: s5, s7: s7,
@@ -747,6 +816,55 @@ func getState(args argSet, activeModelID string) *state {
 		minToBucketRst:     minToBucketReset,
 		bucketResetLocal:   bucketResetLocal,
 		sampleCount:        len(kept),
+		fetchedAt:          fetchedAt,
+		stale:              stale,
+	}
+}
+
+// saveCache writes the usage cache, where Claude Code keeps its own files — and nowhere, when that
+// folder does not exist.
+func saveCache(c cacheFile) {
+	if fi, err := os.Stat(claudeDir); err == nil && fi.IsDir() {
+		if b, err := json.Marshal(c); err == nil {
+			_ = writeFileAtomic(cachePath, b)
+		}
+	}
+}
+
+// writeFileAtomic replaces a file in one step, so a reader running at the same moment — another
+// session's status line, the gate — gets the old document or the new one and never half of each. A
+// torn read used to be taken for a missing cache, which threw the burn samples away with it.
+func writeFileAtomic(path string, b []byte) error {
+	sweepTemps(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	_, werr := tmp.Write(b)
+	cerr := tmp.Close()
+	if werr == nil && cerr == nil {
+		if werr = os.Rename(name, path); werr == nil {
+			return nil
+		}
+	}
+	_ = os.Remove(name)
+	if werr != nil {
+		return werr
+	}
+	return cerr
+}
+
+// sweepTemps removes what an interrupted writeFileAtomic left behind. Claude Code stops a status
+// line that is still running when the next redraw is due, so a run can die between writing its
+// temporary file and renaming it, and at a redraw every half-minute those would pile up. Only files
+// older than a minute are touched: a younger one may be another run's write in progress.
+func sweepTemps(path string) {
+	leftovers, _ := filepath.Glob(path + ".*.tmp")
+	for _, p := range leftovers {
+		if info, err := os.Stat(p); err == nil && time.Since(info.ModTime()) > time.Minute {
+			_ = os.Remove(p)
+		}
 	}
 }
 
@@ -880,14 +998,17 @@ func contextTokens(transcriptPath string) (float64, bool) {
 	return 0, false
 }
 
-// shortTokens prints a token count the way the counter reads best: 510k, 1M, 1.5M.
+// shortTokens prints a token count the way the counter reads best: 510k, 2m, 648m, 29.9b. Thousands
+// and millions are whole; billions keep a tenth, where a whole one would hide a great deal.
 func shortTokens(n float64) string {
 	switch {
-	case n >= 1e6:
-		if v := n / 1e6; v == math.Trunc(v) {
-			return fmt.Sprintf("%.0fM", v)
+	case n >= 1e9:
+		if v := n / 1e9; v < 100 {
+			return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0") + "b"
 		}
-		return fmt.Sprintf("%.1fM", n/1e6)
+		return fmt.Sprintf("%.0fb", n/1e9)
+	case n >= 1e6:
+		return fmt.Sprintf("%.0fm", n/1e6)
 	case n >= 1000:
 		return fmt.Sprintf("%.0fk", n/1000)
 	default:
@@ -936,8 +1057,26 @@ func resetCells(reset *time.Time, minsLeft float64, withWeekday bool) (string, s
 }
 
 // Widths are counted in runes: the gauges are drawn with multi-byte block characters, so len()
-// would pad them wrong and the columns would drift apart.
-func runeWidth(s string) int { return utf8.RuneCountInString(s) }
+// would pad them wrong and the columns would drift apart. A colour code takes no column on screen,
+// so every escape sequence is skipped rather than counted.
+func runeWidth(s string) int {
+	n := 0
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// A CSI sequence runs to its final byte, the first one in @..~.
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			i = j + 1
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		n++
+	}
+	return n
+}
 
 func padRunes(s string, width int) string {
 	if w := runeWidth(s); w < width {
@@ -954,61 +1093,212 @@ func pctCell(pct float64) string { return fmt.Sprintf("%3s %%", num(pct, 0)) }
 // of the window gone. Right-aligned to one width so the gauges start in the same column.
 func captionCell(caption string) string { return fmt.Sprintf("%5s", caption) }
 
-// renderLimits lays the limits out side by side, each as a two-line block: the budget spent on the
-// top line, the share of the window already gone on the bottom one, drawn with the same gauge.
-// Reading one against the other is the whole point — a fuller top bar than bottom bar means the
-// budget is running out faster than the clock, i.e. it will not last to the reset.
-func renderLimits(rows []statusRow, ctx float64, ctxOK bool) string {
-	tops := make([]string, 0, len(rows))
-	bottoms := make([]string, 0, len(rows))
+// contextReading is how full the session's context window is: the tokens the last request carried
+// and the size of the window they are measured against.
+type contextReading struct {
+	tokens, window float64
+	ok             bool
+}
 
-	for i, r := range rows {
-		top := r.label + cellGap + pctCell(r.pct) + " " + captionCell("LIMIT") + " " + usageBar(r.pct)
-		// The TIME line carries no label of its own — just the space its block's label takes, so the
-		// two lines stay column-for-column. The very first column is the exception: Claude Code trims
-		// leading whitespace off every status-line row, which would shift the whole line left, so a
-		// quiet marker holds that one open.
-		label2 := strings.Repeat(" ", runeWidth(r.label))
-		if i == 0 && runeWidth(r.label) > 0 {
-			label2 = "-" + strings.Repeat(" ", runeWidth(r.label)-1)
-		}
-		bottom := label2 + cellGap
+// renderOpts is how a picture is drawn. The zero value is the injected block's: plain text, laid out
+// as wide as it needs to be.
+type renderOpts struct {
+	p     painter
+	width int // columns available; zero when unknown, and then nothing is fitted
+	// contextTail is written after the CONTEXT gauge, on the same line: the status line puts the
+	// session's token count there.
+	contextTail string
+}
+
+// limitBlock is one limit drawn as its two stacked lines. bottom starts after the label's columns,
+// which are filled in once the block's place in a row is known — see renderLimits.
+type limitBlock struct {
+	top, bottom string
+	labelWidth  int
+	width       int
+}
+
+// limitBlocks draws every limit with gauges of the given length.
+func limitBlocks(rows []statusRow, cells int, p painter) []limitBlock {
+	blocks := make([]limitBlock, 0, len(rows))
+	for _, r := range rows {
+		// The LIMIT gauge's colour is how far the spend runs ahead of the time gauge under it. A limit
+		// the API gave no reset for has no time gauge and is measured as if no time had passed, so a
+		// nearly spent one still reads red.
+		top := r.label + cellGap + p.paint(pctCell(r.pct), p.figuresColour()) + " " + captionCell("LIMIT") + " " +
+			p.paint(barOf(r.pct, cells), p.gaugeColour((r.pct-r.windowPct)/limitAheadRed))
+		bottom := cellGap
+		// windowBar is only a presence mark here: it was drawn at the default length, and the gauge
+		// is drawn again from its percentage at whatever length this layout needs.
 		if r.windowBar != "" {
 			caption := r.windowCaption
 			if caption == "" {
 				caption = captionCalendar
 			}
-			bottom += pctCell(r.windowPct) + " " + captionCell(caption) + " " + r.windowBar
+			bottom += p.paint(pctCell(r.windowPct), p.figuresColour()) + " " + captionCell(caption) + " " +
+				p.paint(barOf(r.windowPct, cells), colourTime)
 		}
 		if r.reset != "" {
-			top += " RESET AT " + r.reset
+			top += " RESET AT " + p.paint(r.reset, p.figuresColour())
 			if r.after != "" && r.windowBar != "" {
-				bottom += " RESET AFTER " + r.after
+				bottom += " RESET AFTER " + paintFigures(p, r.after)
 			}
 		}
-		width := runeWidth(top)
-		if runeWidth(bottom) > width {
-			width = runeWidth(bottom)
+		lw := runeWidth(r.label)
+		blocks = append(blocks, limitBlock{top: top, bottom: bottom, labelWidth: lw,
+			width: max(runeWidth(top), lw+runeWidth(bottom))})
+	}
+	return blocks
+}
+
+// packBlocks puts the blocks into rows no wider than width, in order and as many to a row as fit. A
+// width of zero means the terminal's size is unknown, and every block goes on one row.
+func packBlocks(blocks []limitBlock, width int) [][]limitBlock {
+	if width <= 0 || len(blocks) == 0 {
+		return [][]limitBlock{blocks}
+	}
+	var rows [][]limitBlock
+	var cur []limitBlock
+	used := 0
+	for _, b := range blocks {
+		need := b.width
+		if len(cur) > 0 {
+			need += runeWidth(blockGap)
+			if used+need > width {
+				rows = append(rows, cur)
+				cur, used, need = nil, 0, b.width
+			}
 		}
-		tops = append(tops, padRunes(top, width))
-		bottoms = append(bottoms, padRunes(bottom, width))
+		cur = append(cur, b)
+		used += need
+	}
+	return append(rows, cur)
+}
+
+// renderLimits lays the limits out side by side, each as a two-line block: the budget spent on the
+// top line, the share of the window already gone on the bottom one, drawn with the same gauge.
+// Reading one against the other is the whole point — a fuller top bar than bottom bar means the
+// budget is running out faster than the clock, i.e. it will not last to the reset.
+//
+// Given a width, the blocks wrap onto further rows rather than off the edge, and a terminal too
+// narrow for one block at full size gets gauges half as long.
+func renderLimits(rows []statusRow, ctx contextReading, o renderOpts) string {
+	blocks := limitBlocks(rows, barCells, o.p)
+	widest := 0
+	for _, b := range blocks {
+		widest = max(widest, b.width)
+	}
+	if o.width > 0 && widest > o.width {
+		blocks = limitBlocks(rows, narrowBarCells, o.p)
 	}
 
 	lines := make([]string, 0, 3)
-	if ctxOK && contextWindowTokens > 0 {
-		pct := ctx / contextWindowTokens * 100
-		if pct > 100 {
-			pct = 100
-		}
-		// One cell per percent, so this gauge is read straight as the number next to it.
-		lines = append(lines, statusIndent+"CONTEXT"+cellGap+shortTokens(ctx)+"/"+shortTokens(contextWindowTokens)+
-			cellGap+pctCell(pct)+cellGap+barWith(pct, ctxBarCells, ctxFilled))
+	if top := topLine(ctx, o); top != "" {
+		lines = append(lines, top)
 	}
-	lines = append(lines,
-		strings.TrimRight(statusIndent+strings.Join(tops, blockGap), " "),
-		strings.TrimRight(statusIndent+strings.Join(bottoms, blockGap), " "),
-	)
+	for _, group := range packBlocks(blocks, o.width) {
+		tops := make([]string, 0, len(group))
+		bottoms := make([]string, 0, len(group))
+		for i, b := range group {
+			// The bottom line carries no label of its own — just the space its block's label takes, so
+			// the two lines stay column-for-column. The first column of a row is the exception: Claude
+			// Code trims leading whitespace off every status-line row, which would shift the whole line
+			// left, so a quiet marker holds that one open.
+			area := strings.Repeat(" ", b.labelWidth)
+			if i == 0 && b.labelWidth > 0 {
+				area = "-" + strings.Repeat(" ", b.labelWidth-1)
+			}
+			tops = append(tops, padRunes(b.top, b.width))
+			bottoms = append(bottoms, padRunes(area+b.bottom, b.width))
+		}
+		lines = append(lines,
+			strings.TrimRight(statusIndent+strings.Join(tops, blockGap), " "),
+			strings.TrimRight(statusIndent+strings.Join(bottoms, blockGap), " "),
+		)
+	}
 	return strings.Join(lines, "\n")
+}
+
+// contextLine draws the CONTEXT gauge: one cell per percent, so it reads straight as the number
+// beside it — unless the terminal is too narrow for a hundred cells, when it shortens to fit.
+func contextLine(ctx contextReading, o renderOpts) string {
+	pct := ctx.tokens / ctx.window * 100
+	if pct > 100 {
+		pct = 100
+	}
+	// The counter and the percentage are in the gauge's own colour, so the line reads as one.
+	colour := o.p.gaugeColour(pct / 100)
+	head := statusIndent + "CONTEXT" + cellGap + o.p.paint(shortTokens(ctx.tokens)+"/"+shortTokens(ctx.window), colour) +
+		cellGap + o.p.paint(pctCell(pct), colour) + cellGap
+	tail := ""
+	if o.contextTail != "" {
+		tail = " " + o.contextTail
+	}
+	cells := ctxBarCells
+	if o.width > 0 {
+		if room := o.width - runeWidth(head) - runeWidth(tail); room < cells {
+			cells = max(room, minContextCells)
+		}
+	}
+	return head + o.p.paint(barWith(pct, cells, ctxFilled), colour) + tail
+}
+
+// topLine is the line above the limits: the CONTEXT gauge with whatever the status line writes after
+// it, that alone while there is no context reading yet, or nothing.
+func topLine(ctx contextReading, o renderOpts) string {
+	if ctx.ok && ctx.window > 0 {
+		return contextLine(ctx, o)
+	}
+	return o.contextTail
+}
+
+// gaugeColour is the colour at a point of the green-to-red scale, from 0 (green) to 1 (red); see
+// gaugeHueStart for what places a gauge on it.
+func (p painter) gaugeColour(at float64) string {
+	at = math.Max(0, math.Min(1, at))
+	if !p.rgb {
+		return "38;5;" + strconv.Itoa(gaugePalette256[int(math.Round(at*10))])
+	}
+	r, g, b := hsvToRGB(gaugeHueStart+(gaugeHueEnd-gaugeHueStart)*at, gaugeSaturated, gaugeBright)
+	return "38;2;" + strconv.Itoa(r) + ";" + strconv.Itoa(g) + ";" + strconv.Itoa(b)
+}
+
+// paintFigures paints the figures of a wait like "6 days 20:02" and leaves its words alone.
+func paintFigures(p painter, s string) string {
+	fields := strings.Split(s, " ")
+	for i, f := range fields {
+		if strings.ContainsAny(f, "0123456789") {
+			fields[i] = p.paint(f, p.figuresColour())
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+// figuresColour is the colour of the figures; see figuresRGB.
+func (p painter) figuresColour() string {
+	if !p.rgb {
+		return "38;5;" + strconv.Itoa(figures256)
+	}
+	return "38;2;" + strconv.Itoa(figuresRGB[0]) + ";" + strconv.Itoa(figuresRGB[1]) + ";" + strconv.Itoa(figuresRGB[2])
+}
+
+// hsvToRGB converts a hue in degrees, from red at 0 through green at 120, with a saturation and a
+// brightness from 0 to 1, into 8-bit red, green and blue.
+func hsvToRGB(h, s, v float64) (int, int, int) {
+	c := v * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	var r, g, b float64
+	switch {
+	case h < 60:
+		r, g = c, x
+	case h < 120:
+		r, g = x, c
+	default:
+		g, b = c, x
+	}
+	m := v - c
+	to8 := func(f float64) int { return int(math.Round((f + m) * 255)) }
+	return to8(r), to8(g), to8(b)
 }
 
 // renderTextRows prints the BURN / MODEL / ZONE lines under the limits, one per line.
@@ -1024,13 +1314,6 @@ func renderTextRows(rows []statusRow) string {
 		lines = append(lines, strings.TrimRight(statusIndent+padRunes(r.label, labelWidth)+cellGap+r.text, " "))
 	}
 	return strings.Join(lines, "\n")
-}
-
-func formatHorizon(st *state) string {
-	if math.IsInf(st.minToExhaust, 1) || st.minToExhaust >= st.minToReset5 {
-		return "safe to reset " + fmtHHmm(st.r5Local)
-	}
-	return "~" + formatCountdown(st.minToExhaust) + " to cap"
 }
 
 // --- the working-time scale behind the weekly WORK gauge ----------------------
@@ -1442,37 +1725,7 @@ func configRows() []statusRow {
 	return rows
 }
 
-// burnRow says how fast the session window is filling and where that lands.
-func burnRow(st *state) statusRow {
-	return statusRow{
-		label: "BURN",
-		text:  num(st.burn, 2) + " %/min (" + st.burnSource + ") - " + formatHorizon(st) + ", pace x" + num(st.paceRatio, 1),
-	}
-}
-
-// modelRow names the model in use and whether it has a weekly bucket of its own.
-func modelRow(st *state) statusRow {
-	text := st.activeModel + " - no scoped bucket, overall weekly applies"
-	if st.bucketPct >= 0 && st.activeBucket != nil {
-		text = st.activeModel + " - " + st.activeBucket.Model + " bucket " + num(st.bucketPct, 0) + "%"
-		if !math.IsInf(st.minToBucketExhaust, 1) {
-			text += ", ~" + formatCountdown(st.minToBucketExhaust) + " to cap"
-		}
-		if st.bucketBurn > 0.0001 {
-			text += ", burn " + num(st.bucketBurn, 3) + " %/min (" + st.bucketBurnSource + ")"
-		}
-	}
-	return statusRow{label: "MODEL", text: text}
-}
-
-// zoneRow carries the part the session-budget rule acts on.
-func zoneRow(st *state) statusRow {
-	return statusRow{
-		label: "ZONE",
-		text:  st.zone + " (limiter: " + st.limiter + ") -> " + zoneAdvice[st.zone] + "." + formatSwitchAdvice(st),
-	}
-}
-
+// formatSwitchAdvice names where heavy work can go when the model's own bucket is what binds.
 func formatSwitchAdvice(st *state) string {
 	if st.limiter != "model-bucket" {
 		return ""
@@ -1505,23 +1758,22 @@ func run() {
 	hookEvent := args.str("event", "UserPromptSubmit")
 
 	var hookInput map[string]any
+	rawInput := ""
 	if mode == "inject" || mode == "gate" || mode == "statusline" {
-		if raw := readStdin(); raw != "" {
-			_ = json.Unmarshal([]byte(raw), &hookInput)
+		if rawInput = readStdin(); rawInput != "" {
+			_ = json.Unmarshal([]byte(rawInput), &hookInput)
 		}
 	}
-	activeModel := getActiveModel(args, hookInput)
-
-	ctxTokens, ctxOK := 0.0, false
-	if hookInput != nil {
-		if tp, ok := hookInput["transcript_path"].(string); ok {
-			ctxTokens, ctxOK = contextTokens(tp)
-		}
+	// Claude Code hands the status line its model; every other mode works it out, which can mean
+	// reading the whole transcript.
+	activeModel := ""
+	if mode != "statusline" {
+		activeModel = getActiveModel(args, hookInput)
 	}
 
 	switch mode {
 	case "json":
-		st := getState(args, activeModel)
+		st := getState(args, activeModel, nil)
 		if st == nil {
 			// The config's own complaints do not depend on the API, and a malformed config is most
 			// likely to be edited exactly when the hook cannot reach it — before a login, or offline.
@@ -1638,51 +1890,27 @@ func run() {
 		fmt.Print(string(b))
 
 	case "inject":
-		st := getState(args, activeModel)
+		st := getState(args, activeModel, nil)
 		if st == nil {
-			// Nothing to draw, but a broken config still has to be said out loud.
-			if rows := configRows(); len(rows) > 0 {
-				fmt.Print("[limits]\n" + renderTextRows(rows))
+			// Nothing to hand over, but a broken config still has to be said out loud.
+			if len(configProblems) > 0 {
+				fmt.Print(unavailableBlock())
 			}
 			return
 		}
-		// Both injections read as the same table as the status line, so one glance carries
-		// everywhere. Session start adds the model row and the planning reminder.
-		sessionStart := hookEvent == "SessionStart"
-		notes := []statusRow{burnRow(st)}
-		notes = append(notes, configRows()...)
-		if sessionStart && st.activeModel != "" {
-			notes = append(notes, modelRow(st))
+		now := time.Now()
+		transcript, _ := hookInput["transcript_path"].(string)
+		ctx := contextReading{window: contextWindowTokens}
+		ctx.tokens, ctx.ok = contextTokens(transcript)
+		fiveStart, weekFrom := limitWindows(st)
+		var tokens *tokenStats
+		if t, ok := sessionTokenStats(transcript, fiveStart, weekFrom, now); ok {
+			tokens = &t
 		}
-		notes = append(notes, zoneRow(st))
-
-		header := "[limits]"
-		if sessionStart {
-			header = "[session-budget] Claude subscription limits (account-global, all sessions):"
-		}
-		out := header + "\n" + renderLimits(limitRows(st), ctxTokens, ctxOK) + "\n" + renderTextRows(notes)
-		// Named only where it exists. Pointing every session at a file the project never installed
-		// is an instruction that cannot be followed, planted in the model's context on every start.
-		if sessionStart && budgetRuleInstalled() {
-			out += "\nPlan M/L/XL tasks per the session-budget rule (.claude/rules/session-budget.md)."
-		}
-		fmt.Print(out)
+		fmt.Print(modelBlock(st, limitRows(st), ctx, tokens, hookEvent == "SessionStart", now))
 
 	case "statusline":
-		st := getState(args, activeModel)
-		if st == nil {
-			out := "LIMITS -> N/A"
-			if rows := configRows(); len(rows) > 0 {
-				out += "\n" + renderTextRows(rows)
-			}
-			fmt.Print(out)
-			return
-		}
-		out := renderLimits(limitRows(st), ctxTokens, ctxOK)
-		if rows := configRows(); len(rows) > 0 {
-			out += "\n" + renderTextRows(rows)
-		}
-		fmt.Print(out)
+		fmt.Print(renderStatusline(args, rawInput, hookInput, time.Now()))
 
 	case "gate":
 		if !gateEnabled {
@@ -1702,7 +1930,7 @@ func run() {
 				}
 			}
 		}
-		st := getState(args, judgeModel)
+		st := getState(args, judgeModel, nil)
 		if st == nil {
 			return
 		}
@@ -1786,6 +2014,7 @@ func loadConfig() {
 	claudeDir = configDir()
 	cachePath = filepath.Join(claudeDir, "usage-limits-cache.json")
 	gateAsksPath = filepath.Join(claudeDir, "usage-limits-gate-asks.json")
+	tokenCachePath = filepath.Join(claudeDir, "usage-limits-tokens.json")
 	credPath = filepath.Join(claudeDir, ".credentials.json")
 
 	// Project config first, then the user one. The binary lives in <project>/scripts/, and Claude Code
@@ -1856,6 +2085,18 @@ func loadConfig() {
 		} else {
 			configProblems = append(configProblems, "config: \"context_window_tokens\" must be above zero, so "+
 				strconv.FormatFloat(ctxTokens, 'f', -1, 64)+" was ignored")
+		}
+	}
+	var ahead float64
+	if field("limit_ahead_red_pct", &ahead) {
+		if ahead > 0 && ahead <= 100 {
+			limitAheadRed = ahead
+		} else {
+			// The lead is one percentage less another, so it never passes a hundred points: a threshold
+			// above that is never reached. At zero the lead is divided by nothing, and below it the scale
+			// runs backwards — red while the spend is behind the clock.
+			configProblems = append(configProblems, "config: \"limit_ahead_red_pct\" must be above 0 and at most 100, so "+
+				strconv.FormatFloat(ahead, 'f', -1, 64)+" was ignored")
 		}
 	}
 	var ttl int

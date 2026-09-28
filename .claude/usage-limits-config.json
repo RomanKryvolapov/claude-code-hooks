@@ -1,6 +1,7 @@
 {
   "fetch_ttl_sec": 60,
   "gate_enabled": true,
+  "limit_ahead_red_pct": 20,
   "time_zone": "Europe/Sofia",
   "working_week": {
     "mon": {
