@@ -30,19 +30,19 @@
       "to": "20:00"
     },
     "sat": {
-      "percent": 20,
+      "percent": 5,
       "from": "12:00",
       "to": "20:00"
     },
     "sun": {
-      "percent": 20,
+      "percent": 5,
       "from": "12:00",
       "to": "20:00"
     }
   },
   "zones": {
     "session": {
-      "YELLOW": 50,
+      "YELLOW": 70,
       "ORANGE": 80,
       "RED": 90
     },
