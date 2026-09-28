@@ -1,3 +1,3 @@
 module play-sound
 
-go 1.25
+go 1.27.1

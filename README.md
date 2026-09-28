@@ -754,4 +754,5 @@ cd scripts/usage-limits-src && GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 \
 
 That is an Intel Mac; for arm64 Linux the target is `GOOS=linux GOARCH=arm64` and the name to write
 is `usage-limits-linux-amd64`. Repeat for `work-audit-src` and `play-sound-src`, whose launchers work
-the same way. Go 1.25+ is needed for this, and it is the only thing Go is ever needed for.
+the same way. Go 1.27.1+ is needed for this, and it is the only thing Go is ever needed for. The
+binaries built with it run on macOS 13 or later — the oldest macOS that Go release supports.
