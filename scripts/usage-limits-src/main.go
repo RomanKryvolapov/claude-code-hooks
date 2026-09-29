@@ -919,11 +919,7 @@ func usageBar(pct float64) string { return barOf(pct, barCells) }
 // with the usual 20 cells that is one cell per started 5 %, so the gauge never reads empty while
 // something has already been spent. Computed from the same rounded percentage the row prints, so the
 // bar and the number can never disagree.
-func barOf(pct float64, cells int) string { return barWith(pct, cells, barFilled) }
-
-// barWith is barOf with the fill character spelled out: the context gauge uses a lighter block so
-// it cannot be mistaken for one of the limit gauges below it.
-func barWith(pct float64, cells int, fill rune) string {
+func barOf(pct float64, cells int) string {
 	if cells <= 0 {
 		return ""
 	}
@@ -934,7 +930,7 @@ func barWith(pct float64, cells int, fill rune) string {
 	if filled > cells {
 		filled = cells
 	}
-	return strings.Repeat(string(fill), filled) + strings.Repeat(string(barEmpty), cells-filled)
+	return strings.Repeat(string(barFilled), filled) + strings.Repeat(string(barEmpty), cells-filled)
 }
 
 // contextTokens is how much context the session is holding right now: the tokens the last
@@ -1240,7 +1236,7 @@ func contextLine(ctx contextReading, o renderOpts) string {
 			cells = max(room, minContextCells)
 		}
 	}
-	return head + o.p.paint(barWith(pct, cells, ctxFilled), colour) + tail
+	return head + o.p.paint(barOf(pct, cells), colour) + tail
 }
 
 // topLine is the line above the limits: the CONTEXT gauge with whatever the status line writes after

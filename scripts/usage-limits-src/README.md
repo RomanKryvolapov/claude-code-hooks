@@ -67,15 +67,14 @@ carried — fresh input plus everything written to or read from the prompt cache
 window it is measured against. The status line takes both from Claude Code's own figures; the
 injected block reads the tokens from the session transcript and measures them against
 `context_window_tokens` in the config (1M by default). Its gauge is one cell per percent, so it reads
-straight as the number beside it, and it is drawn with a lighter block than the limit gauges
-so the two are never confused. Subagent turns are skipped — they run in their own
-context — and after a compaction the number simply drops. On the first prompt of a session
-the transcript holds no reply yet, so the line is absent rather than reading zero.
+straight as the number beside it. Subagent turns are skipped — they run in their own context — and
+after a compaction the number simply drops. On the first prompt of a session the transcript holds no
+reply yet, so the line is absent rather than reading zero.
 
 ```
 CONTEXT  634k/1m   63 %  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
-5 HOURS   31 % LIMIT ███████░░░░░░░░░░░░░ RESET AT 15:00      7 DAYS   24 % LIMIT █████░░░░░░░░░░░░░░░ RESET AT MON 18:00          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00
--         77 %  TIME ████████████████░░░░ RESET AFTER 1:10             34 %  WORK ███████░░░░░░░░░░░░░ RESET AFTER 5 days 04:10            34 %  WORK ███████░░░░░░░░░░░░░ RESET AFTER 5 days 04:10
+5 HOURS   31 % LIMIT ▓▓▓▓▓▓▓░░░░░░░░░░░░░ RESET AT 15:00      7 DAYS   24 % LIMIT ▓▓▓▓▓░░░░░░░░░░░░░░░ RESET AT MON 18:00          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00
+-         77 %  TIME ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░ RESET AFTER 1:10             34 %  WORK ▓▓▓▓▓▓▓░░░░░░░░░░░░░ RESET AFTER 5 days 04:10            34 %  WORK ▓▓▓▓▓▓▓░░░░░░░░░░░░░ RESET AFTER 5 days 04:10
 ```
 
 The dash in the first column of the last line is not decoration: Claude Code trims leading

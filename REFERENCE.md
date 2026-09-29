@@ -107,8 +107,8 @@ here it is as plain text, as it prints with `NO_COLOR` set:
 
 ```
 CONTEXT  739k/1m   74 %  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░ CACHE 0:59, SESSION: FRESH 2m CACHED 137m, ACCOUNT 5H: FRESH 19m CACHED 1.1b, 7D: FRESH 20m CACHED 1.1b
-5 HOURS   57 % LIMIT ████████████░░░░░░░░ RESET AT 23:49      7 DAYS   16 % LIMIT ████░░░░░░░░░░░░░░░░ RESET AT MON 17:59          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00
--         64 %  TIME █████████████░░░░░░░ RESET AFTER 1:49              5 %  WORK █░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 19:59             5 %  WORK █░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 19:59
+5 HOURS   57 % LIMIT ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░ RESET AT 23:49      7 DAYS   16 % LIMIT ▓▓▓▓░░░░░░░░░░░░░░░░ RESET AT MON 17:59          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00
+-         64 %  TIME ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░ RESET AFTER 1:49              5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 19:59             5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 19:59
 ```
 
 **What the model is handed**, and you do not see: the same figures as data, prefixed to its context
@@ -148,11 +148,10 @@ not last to the reset. When the bottom bar fills, the limit resets.
 
 **`CONTEXT`** on top is not a subscription limit. It is how many tokens the last request carried —
 fresh input plus everything written to or read from the prompt cache — against the context window.
-It is why a long session eventually gets compacted. Its gauge is one cell per percent and uses a
-lighter block so it is never confused with the limit gauges. Subagent turns are skipped; they run in
-their own context. In the status line the window is the real one, as Claude Code reports it — 200k
-or 1M, whichever the model has. The injected block is not told, and measures against
-`context_window_tokens` from the config.
+It is why a long session eventually gets compacted. Its gauge is one cell per percent. Subagent turns
+are skipped; they run in their own context. In the status line the window is the real one, as Claude
+Code reports it — 200k or 1M, whichever the model has. The injected block is not told, and measures
+against `context_window_tokens` from the config.
 
 The elements after the figures are the model's, and appear in its block only:
 

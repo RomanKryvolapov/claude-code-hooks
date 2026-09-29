@@ -24,11 +24,11 @@ func TestPlainPicture(t *testing.T) {
 		{label: "FABLE", pct: 0, reset: "MON 18:00", windowBar: usageBar(5), windowPct: 5, windowCaption: "WORK", after: "6 days 21:27"},
 		{label: "OPUS", pct: 61},
 	}
-	want := "CONTEXT  168k/1m   17 %  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n5 HOURS   48 % LIMIT ██████████░░░░░░░░░░ RESET AT 23:49      7 DAYS   13 % LIMIT ███░░░░░░░░░░░░░░░░░ RESET AT MON 17:59          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00          OPUS   61 % LIMIT █████████████░░░░░░░\n-         34 %  TIME ███████░░░░░░░░░░░░░ RESET AFTER 3:17              5 %  WORK █░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27             5 %  WORK █░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27"
+	want := "CONTEXT  168k/1m   17 %  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n5 HOURS   48 % LIMIT ▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░ RESET AT 23:49      7 DAYS   13 % LIMIT ▓▓▓░░░░░░░░░░░░░░░░░ RESET AT MON 17:59          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00          OPUS   61 % LIMIT ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░\n-         34 %  TIME ▓▓▓▓▓▓▓░░░░░░░░░░░░░ RESET AFTER 3:17              5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27             5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27"
 	if got := renderLimits(rows, contextReading{tokens: 168000, window: 1e6, ok: true}, renderOpts{}); got != want {
 		t.Errorf("injected picture changed:\n got %q\nwant %q", got, want)
 	}
-	want = "5 HOURS   48 % LIMIT ██████████░░░░░░░░░░ RESET AT 23:49      7 DAYS   13 % LIMIT ███░░░░░░░░░░░░░░░░░ RESET AT MON 17:59\n-         34 %  TIME ███████░░░░░░░░░░░░░ RESET AFTER 3:17              5 %  WORK █░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27"
+	want = "5 HOURS   48 % LIMIT ▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░ RESET AT 23:49      7 DAYS   13 % LIMIT ▓▓▓░░░░░░░░░░░░░░░░░ RESET AT MON 17:59\n-         34 %  TIME ▓▓▓▓▓▓▓░░░░░░░░░░░░░ RESET AFTER 3:17              5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27"
 	if got := renderLimits(rows[:2], contextReading{}, renderOpts{}); got != want {
 		t.Errorf("injected picture without context changed:\n got %q\nwant %q", got, want)
 	}
@@ -111,7 +111,7 @@ func TestModelBlock(t *testing.T) {
 
 func TestRuneWidthSkipsColourCodes(t *testing.T) {
 	on := painter{on: true}
-	for _, s := range []string{"5 HOURS", "██░░", "▓▓░"} {
+	for _, s := range []string{"5 HOURS", "▓▓░░"} {
 		if got, want := runeWidth(on.paint(s, "38;5;208")), runeWidth(s); got != want {
 			t.Errorf("width of painted %q = %d, want %d", s, got, want)
 		}
@@ -190,12 +190,12 @@ func TestGaugesArePaintedWhole(t *testing.T) {
 	for _, want := range []string{
 		"CONTEXT  " + gauge(0.75, "150k/200k") + "  " + gauge(0.75, " 75 %") + "  " + gauge(0.75, strings.Repeat("▓", 75)+strings.Repeat("░", 25)),
 		// 55 % spent with 34 % of the time gone: 21 points ahead, past the 20 that make it red.
-		"5 HOURS  " + figure(" 55 %") + " LIMIT " + gauge(1, strings.Repeat("█", 11)+strings.Repeat("░", 9)) + " RESET AT " + figure("23:49"),
+		"5 HOURS  " + figure(" 55 %") + " LIMIT " + gauge(1, strings.Repeat("▓", 11)+strings.Repeat("░", 9)) + " RESET AT " + figure("23:49"),
 		// 13 % against 5 %: 8 points ahead, 0.4 of the way to red.
-		"7 DAYS  " + figure(" 13 %") + " LIMIT " + gauge(0.4, "███"+strings.Repeat("░", 17)) + " RESET AT " + figure("MON 17:59"),
+		"7 DAYS  " + figure(" 13 %") + " LIMIT " + gauge(0.4, "▓▓▓"+strings.Repeat("░", 17)) + " RESET AT " + figure("MON 17:59"),
 		// 96 % against 5 %: far past it.
-		"FABLE  " + figure(" 96 %") + " LIMIT " + gauge(1, strings.Repeat("█", 20)),
-		figure(" 34 %") + "  TIME " + cyan(strings.Repeat("█", 7)+strings.Repeat("░", 13)) + " RESET AFTER " + figure("3:17"),
+		"FABLE  " + figure(" 96 %") + " LIMIT " + gauge(1, strings.Repeat("▓", 20)),
+		figure(" 34 %") + "  TIME " + cyan(strings.Repeat("▓", 7)+strings.Repeat("░", 13)) + " RESET AFTER " + figure("3:17"),
 		// The figures of a longer wait painted, the word between them not.
 		" RESET AFTER " + figure("6") + " days " + figure("21:27"),
 	} {
@@ -214,10 +214,10 @@ func TestGaugesArePaintedWhole(t *testing.T) {
 	behind := []statusRow{{label: "5 HOURS", pct: 80, reset: "23:49", windowBar: usageBar(90), windowPct: 90, after: "0:30"},
 		{label: "OPUS", pct: 6}}
 	out = renderLimits(behind, contextReading{}, renderOpts{p: p})
-	if !strings.Contains(out, "LIMIT "+gauge(0, strings.Repeat("█", 16)+strings.Repeat("░", 4))) {
+	if !strings.Contains(out, "LIMIT "+gauge(0, strings.Repeat("▓", 16)+strings.Repeat("░", 4))) {
 		t.Errorf("spend behind the clock is not green:\n%q", out)
 	}
-	if !strings.Contains(out, "OPUS  "+figure("  6 %")+" LIMIT "+gauge(0.3, "██"+strings.Repeat("░", 18))) {
+	if !strings.Contains(out, "OPUS  "+figure("  6 %")+" LIMIT "+gauge(0.3, "▓▓"+strings.Repeat("░", 18))) {
 		t.Errorf("a limit without a time gauge is not measured against no time passed:\n%q", out)
 	}
 }
@@ -230,7 +230,7 @@ func TestTheRedLeadIsConfigurable(t *testing.T) {
 	limitAheadRed = 8
 	p := painter{on: true, rgb: true}
 	out := renderLimits(sampleRows(), contextReading{}, renderOpts{p: p})
-	want := "7 DAYS  \x1b[38;2;255;180;0m 13 %\x1b[0m LIMIT \x1b[" + p.gaugeColour(1) + "m███" + strings.Repeat("░", 17) + "\x1b[0m"
+	want := "7 DAYS  \x1b[38;2;255;180;0m 13 %\x1b[0m LIMIT \x1b[" + p.gaugeColour(1) + "m▓▓▓" + strings.Repeat("░", 17) + "\x1b[0m"
 	if !strings.Contains(out, want) {
 		t.Errorf("a gauge as far ahead as the setting is not red:\n%q", out)
 	}
@@ -273,7 +273,7 @@ func TestRenderLimitsFitsTheWidth(t *testing.T) {
 		t.Errorf("at 70 columns the blocks took %d lines, want 6", n+1)
 	}
 	narrow := renderLimits(sampleRows(), contextReading{}, renderOpts{width: 50})
-	if strings.Contains(narrow, strings.Repeat("░", 11)) || !strings.Contains(narrow, "LIMIT ██████░░░░") {
+	if strings.Contains(narrow, strings.Repeat("░", 11)) || !strings.Contains(narrow, "LIMIT ▓▓▓▓▓▓░░░░") {
 		t.Errorf("a narrow terminal did not get ten-cell gauges:\n%s", narrow)
 	}
 	// Unknown width: everything on one row, as before.

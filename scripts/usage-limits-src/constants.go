@@ -105,10 +105,9 @@ const sampleMaxAgeMin = 180.0
 
 // --- the picture --------------------------------------------------------------
 const (
-	barCells     = 20 // one cell per 5 %
-	barFilled    = '█'
+	barCells     = 20  // one cell per 5 %
+	barFilled    = '▓' // every gauge, the context one included
 	barEmpty     = '░'
-	ctxFilled    = '▓'    // the context gauge, so it never reads as one of the limit gauges
 	ctxBarCells  = 100    // the context gauge: one cell per percent
 	cellGap      = "  "   // inside a block: label → number → gauge → reset text
 	blockGap     = "    " // between two limit blocks
