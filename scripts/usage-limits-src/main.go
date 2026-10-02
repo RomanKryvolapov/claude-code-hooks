@@ -574,17 +574,16 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 			raw.SevenDay, liveSeven = live.SevenDay, true
 		}
 	}
+	// What the API answered on this call, if it did: when there is nothing to draw from, it is still
+	// what the cache must hold from now on.
+	var fresh json.RawMessage
+	if fetchedFresh {
+		fresh = rawBytes
+	}
 	if raw.FiveHour == nil {
 		// Nothing to draw from, but the attempt is still written down, so that the API is not
 		// asked again before its time.
-		if cache == nil {
-			cache = &cacheFile{}
-		}
-		if triedAt != cache.TriedAt {
-			kept := *cache
-			kept.TriedAt = triedAt
-			saveCache(kept)
-		}
+		rememberTheAttempt(cache, triedAt, fresh)
 		return nil
 	}
 
@@ -601,6 +600,10 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 	}
 	r5, ok5 := parseTime(raw.FiveHour.ResetsAt)
 	if !ok5 {
+		// A 5-hour window that has not started carries no reset time: nothing to draw from either,
+		// and the attempt is written down the same way. Given up before it, every refresh of every
+		// open session asked the API again (review of PR 697).
+		rememberTheAttempt(cache, triedAt, fresh)
 		return nil
 	}
 	var r7 time.Time
@@ -821,6 +824,26 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 	}
 }
 
+// rememberTheAttempt writes down that the API was just asked, where there were no figures to draw
+// from, so that it is not asked again before its time. An answer the API did give — a window that
+// has not started — replaces the cached one: left behind the new attempt, the last window's figures,
+// its reset already past, were drawn until the next fetch, and a spent window read RED.
+func rememberTheAttempt(cache *cacheFile, triedAt string, fresh json.RawMessage) {
+	if cache == nil {
+		cache = &cacheFile{}
+	}
+	if fresh == nil && triedAt == cache.TriedAt {
+		return
+	}
+	kept := *cache
+	kept.TriedAt = triedAt
+	if fresh != nil {
+		kept.Raw = fresh
+		kept.FetchedAt = triedAt
+	}
+	saveCache(kept)
+}
+
 // saveCache writes the usage cache, where Claude Code keeps its own files — and nowhere, when that
 // folder does not exist.
 func saveCache(c cacheFile) {
@@ -833,7 +856,8 @@ func saveCache(c cacheFile) {
 
 // writeFileAtomic replaces a file in one step, so a reader running at the same moment — another
 // session's status line, the gate — gets the old document or the new one and never half of each. A
-// torn read used to be taken for a missing cache, which threw the burn samples away with it.
+// torn read is taken for a missing cache, which throws the burn samples away with it. The one
+// exception is the in-place fallback below, taken only when the rename is refused.
 func writeFileAtomic(path string, b []byte) error {
 	sweepTemps(path)
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
@@ -845,6 +869,16 @@ func writeFileAtomic(path string, b []byte) error {
 	cerr := tmp.Close()
 	if werr == nil && cerr == nil {
 		if werr = os.Rename(name, path); werr == nil {
+			return nil
+		}
+		// On Windows a file another session holds open for reading cannot be replaced by a rename
+		// ("Access is denied"), and the update was lost (review of PR 697). It is written in place
+		// instead. A reader caught mid-write — most likely the very one that held the file open —
+		// reads a torn file and takes it for none: for the usage cache that is one fetch out of
+		// turn and the burn samples lost, for the token cache one full recount of the transcripts.
+		// Rarer and cheaper than every such write lost.
+		if werr = os.WriteFile(path, b, 0o600); werr == nil {
+			_ = os.Remove(name)
 			return nil
 		}
 	}

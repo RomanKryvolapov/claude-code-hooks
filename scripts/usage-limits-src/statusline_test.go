@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -783,5 +785,95 @@ func TestShortTokens(t *testing.T) {
 		if got := shortTokens(n); got != want {
 			t.Errorf("shortTokens(%v) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// A 5-hour window that has not started carries no reset time. The state was given up before the
+// cache was written, so the attempt went unrecorded and every refresh of every open session asked
+// the API again (review of PR 697).
+func TestAnUnstartedWindowStillWritesTheAttemptDown(t *testing.T) {
+	if runtimeIsDarwin() {
+		t.Skip("reads the login Keychain on macOS")
+	}
+	withCache(t, time.Hour, `{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":10,"resets_at":null}}`)
+
+	getState(argSet{}, "", nil)
+
+	if c := getCacheObject(); c == nil || c.TriedAt == "" {
+		t.Fatal("the attempt was not written down")
+	}
+}
+
+// On Windows a file another session holds open for reading refuses the rename that replaces it, so a
+// session writing the cache while another read it lost the write — the fetch throttle, the burn
+// samples, the token offsets (review of PR 697). The update still lands.
+func TestTheCacheIsWrittenWhileAnotherSessionReadsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage-limits-cache.json")
+	if err := writeFileAtomic(path, []byte(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	reading, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = writeFileAtomic(path, []byte(`{"a":2}`))
+	_ = reading.Close()
+
+	if err != nil {
+		t.Fatalf("written while read: %v", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != `{"a":2}` {
+		t.Fatalf("read back %q", b)
+	}
+	if left, _ := filepath.Glob(path + ".*.tmp"); len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+}
+
+// usageFromServer answers every request the hook makes with body and counts them, standing in for
+// the usage endpoint behind a login that has not expired.
+func usageFromServer(t *testing.T, body string) *int {
+	t.Helper()
+	login := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"t","expiresAt":%d}}`, time.Now().Add(time.Hour).UnixMilli())
+	if err := os.WriteFile(credPath, []byte(login), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	asked := 0
+	saved := http.DefaultClient.Transport
+	t.Cleanup(func() { http.DefaultClient.Transport = saved })
+	http.DefaultClient.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		asked++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	return &asked
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// The window that went RED has reset and the next one has not started. The API says so, and the
+// answer has to be what the cache holds from then on: kept behind the new attempt, the spent window's
+// figures were drawn until the next fetch — RED, and the gate refusing spawns, over a reset already
+// past.
+func TestAnUnstartedWindowReplacesTheSpentOne(t *testing.T) {
+	if runtimeIsDarwin() {
+		t.Skip("reads the login Keychain on macOS")
+	}
+	now := time.Now()
+	spent := fmt.Sprintf(`{"five_hour":{"utilization":95,"resets_at":%q},"seven_day":{"utilization":10,"resets_at":%q}}`,
+		now.Add(-time.Hour).UTC().Format(time.RFC3339), now.Add(100*time.Hour).UTC().Format(time.RFC3339))
+	withCache(t, 3*time.Hour, spent)
+	asked := usageFromServer(t, `{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":10,"resets_at":null}}`)
+
+	if st := getState(argSet{}, "", nil); st != nil {
+		t.Fatalf("drew a window that has not started: s5=%v", st.s5)
+	}
+	if st := getState(argSet{}, "", nil); st != nil {
+		t.Fatalf("drew the spent window from the cache: s5=%v zone=%v", st.s5, st.zone)
+	}
+	if *asked != 1 {
+		t.Fatalf("the API was asked %d times, want 1", *asked)
 	}
 }
