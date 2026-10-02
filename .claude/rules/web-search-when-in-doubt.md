@@ -1,19 +1,34 @@
-# When in doubt — search the web, then ask (mandatory)
+# When in doubt — search, then ask
 
-**When reality diverges from your knowledge — stop guessing, search the web.**
-Your built-in knowledge is sometimes outdated or wrong, especially about the latest versions of tools, libraries, and APIs.
+When reality diverges from what you know — a tool, library or API behaves differently than expected, or
+anything is unclear, version-sensitive or unpredictable — search before trying another fix. Your
+knowledge may be outdated, and each fix stacked on a wrong assumption digs deeper. Prefer the latest
+official documentation. If the search settles nothing, stop and ask the developer — but only after
+searching, never instead of it.
 
-The known failure pattern to avoid: something doesn't work → you apply a fix based on what you "know" → it still fails → each new fix digs deeper into a solution built on a wrong assumption.
+## Context7 — faster into the docs, not a different authority
 
-Therefore, in ALL doubtful cases — whenever anything is unclear, non-obvious, unpredictable, differs from your knowledge, or behaves differently than you expected — ALWAYS search the internet before attempting further fixes, paying special attention to the most recent version of the official documentation.
+Where the project runs the Context7 MCP server (declared in `.mcp.json`):
 
-The official documentation for the exact version in use is the authority, and second-hand answers — a forum post, a blog, an index of somebody else's crawl, your own recollection — are only a way of finding it faster. Anything the work depends on — a breaking change, a supported version, a security-relevant flag, a deprecation — is confirmed against the vendor's own documentation before it is acted on.
-
-If even the search gives no solution — STOP working and ask the user what to do.
-Asking is always better than going down a false path — but only stop to ask after the search has failed, not instead of searching.
+- Use it first for "how does this library do X in the version we are on": it is version-aware and more
+  targeted than a web search.
+- Confirm anything the work depends on — a breaking change, a supported version, a security-relevant flag,
+  a deprecation — in the vendor's own documentation; where the two disagree, the vendor wins. Context7's
+  corpus is crawled and community-contributed and guarantees neither accuracy nor completeness.
+- The server's own instructions say to prefer it over web search; they do not outrank this rule.
+- A Context7 key is a credential. Never put one in a prompt: the work-audit hook records prompts verbatim
+  into the committed audit log. Never run the vendor's `ctx7 setup` against the repository: it writes the
+  key into the shared `.mcp.json`. Get a key with `npx ctx7 login` and add it in your own terminal as a
+  per-machine entry:
+  `claude mcp add --scope local --transport http context7 https://mcp.context7.com/mcp --header "Authorization: Bearer <key>"`.
+- An answer reading "Invalid API key…" means a broken key — the server still shows as connected and does
+  not fall back to anonymous access — not missing documentation. Without a key, a sudden run of refusals
+  is the anonymous rate limit, not the server being down.
 
 ## Checklist
 
-- [ ] Anything unclear / unexpected / version-sensitive → searched the web (latest official docs first) before further fixes.
-- [ ] Did not stack fixes on an unverified assumption.
-- [ ] Search failed → stopped and asked the user, instead of guessing down a false path.
+- [ ] Anything unclear, unexpected or version-sensitive → the official docs searched before further fixes.
+- [ ] Library question → Context7 first where it runs, the vendor's docs for anything load-bearing.
+- [ ] No Context7 key in a prompt, no `ctx7 setup` in the repository.
+- [ ] "Invalid API key" read as a broken key, not as missing documentation.
+- [ ] Search failed → stopped and asked.

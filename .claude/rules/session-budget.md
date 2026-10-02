@@ -1,180 +1,93 @@
-# Session budget — spend to the task, limits are a guardrail
+# Session budget — spend to the task; limits are a guardrail
 
-**Spend tokens in proportion to the task's real complexity** — the cheapest path that reliably
-solves it, not the most thorough one the budget could afford.
-Limits are a **guardrail**: they mark where you would hit a wall or a rate-limit so you can stop
-short, not a budget to fill.
-A GREEN zone does NOT mean "burn freely"; nearing a threshold means narrow scope, never spend up to
-it.
-Default to inline work — subagents and fan-outs cost multiples of one thread and are only worth a
-clear net saving.
+Spend tokens in proportion to the task's real complexity — the cheapest path that reliably solves it,
+not the most thorough one the budget could afford. Limits mark where you would hit a wall, not a budget
+to fill: a green zone is not permission to burn, and nearing a threshold means narrowing scope. Work
+inline by default; subagents and fan-outs cost multiples of one thread.
 
-**One standing exception, and it is not discretionary:** the `change-reviewer` pass that
-[finishing-work](finishing-work.md) requires at the grading stage. The usage gate exempts it by
-name, so it is not blocked in any zone. It is a single agent, and it runs before the end of any turn
-in which files changed, whether or not the message mentions them. It is never weighed against the
-budget: the developer asked for it precisely because a self-graded verdict keeps passing work that
-then comes back. A hot zone can no longer prevent it. A per-session spawn cap still can — and where
-it does, the revision says so and falls back to a cold self-pass; it is never quietly skipped to
-save tokens.
+**The one exception** is the `change-reviewer` pass that rule `finishing-work` runs once per task, when
+the task is done. It is never weighed against the budget and the usage gate exempts it by name, so no zone
+blocks it; if the agent cannot be launched at all, the revision says so and falls back to a cold
+self-pass.
 
-The failure mode this prevents: inflating a small task into a large one — extra passes, unrequested
-tests/refactors, blind full-file scans, re-reads, and subagents that cost multiples of doing the
-work inline — just because budget was available.
+## Reading the live numbers
 
-## Live numbers (from the hook)
+The `usage-limits` hook (wired in `.claude/settings.json`) adds a `<usage_limits>` block at session start
+and on every prompt. It is data, account-wide across every session on this subscription, and it outranks
+any assumption about remaining quota.
 
-Project hooks (`.claude/hooks/usage-limits`, wired in `.claude/settings.json`) hand you live
-subscription usage as a `<usage_limits>` block at session start and on every prompt: data, in the
-format its root states, with no instructions in it. The status line draws the same figures as gauges
-for the person.
+- `<context>` — how much of this session's context window the last request carried; why long sessions
+  get compacted.
+- `<limit … used gone resets>` — one per limit: the 5-hour window, the 7-day window, each per-model weekly
+  bucket. `used` ahead of `gone` means the budget runs out before the reset. Weekly limits are scaled to
+  the working week the config defines — a display scale only; resets, burn, zones and the gate run on
+  clock time.
+- `<tokens>` — fresh (new input, output, cache writes) and cached (read back from the prompt cache at a
+  tenth of the price), for this session and for the account.
+- `<burn>`, `<zone>` (level, the binding limiter, what it allows) and, at session start, `<model>`.
+  `<config_problem>` names config the hook could not use; `<stale>` means the figures are that old —
+  read them as a floor.
 
-- `<context used="847k of 1m (85%)"/>` — how much of this session's context window the last request
-  carried. Not a subscription limit: it is why a long session gets compacted, and every request
-  re-reads it.
-- `<limit … used="58%" gone="69% of the window" resets="23:50, in 1:33"/>` — one per limit: the
-  5-hour window, the 7-day window, then every per-model weekly bucket. **Read `used` against
-  `gone`:** used ahead of gone means the budget is running out faster than the clock and will not
-  last to the reset. The weekly limits count the **working week** instead of the calendar — only the
-  hours the config's `working_week` says are worked, each weekday weighted by its own percentage
-  (noon to eight on weekdays, with the weekend counting for far less) — because nobody spends
-  budget at four in the morning; a week measured on the calendar ran ahead of the spend every Monday
-  and behind it every Friday. It is a display scale only: resets, burn, forecast, zones and the gate
-  all stay on real clock time.
-- `<tokens>` — this session's tokens, and the account's (every session on this machine) in the
-  5-hour and weekly windows. `fresh` is new input, output and cache writes; `cached` is what was read
-  back from the prompt cache, at a tenth of the price, and grows by the whole context on every
-  request.
-- `<burn>` (rate, forecast, pace — spend over the share of the window gone), `<zone>` (level, the
-  binding limiter, and what it allows), and at session start `<model>`. A `<config_problem>` names
-  anything in the config the hook could not use. A `<stale>` element means the usage endpoint has
-  not answered since the time it names: the figures are that old, and since spend only grows inside a
-  window, read them as a floor rather than the current state.
+For a precise check: `.claude/hooks/usage-limits --mode json --model <current-model-id>` (fields include
+`session_pct`, `weekly_pct`, `zone`, `limiter`, `burn_pct_per_min`, `min_to_exhaust`, `horizon_min`,
+`active_model_bucket`); `{"error": …}` means plan by time only.
 
-The hook is a **cross-platform Go binary** — a thin POSIX launcher (`.claude/hooks/usage-limits`)
-runs the prebuilt binary for the current OS, one per OS committed in this project's scripts folder
-with its source beside them, so it needs no Node or other runtime.
+The PreToolUse gate refuses subagent and workflow spawns in a hot zone. In ORANGE it asks about the first
+spawn of the session only and remembers only that it asked, not the answer — refusing that one spawn sets
+the shape of the rest of the session. Claude Code itself has no per-session spawn cap any more
+(`CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` is a no-op since v2.1.224); only its limits on concurrent
+subagents and on nesting depth apply.
 
-The data is **account-global** — it reflects ALL Claude sessions on this subscription; trust it over
-any internal assumption about remaining quota.
+## Size the task by its work, not by the remaining budget
 
-The PreToolUse gate is the enforcement layer that backs this guidance: it refuses subagent and
-workflow spawns in a hot zone. A second, harder ceiling is available but not switched on by default
-— `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` in the `env` block of `settings.json` caps spawns per
-session outright, and the count resets on `/clear`. Set it if you want a fixed ceiling as well as a
-zone-based one.
+| Class   | Shape                                | Depth                                                     |
+| ------- | ------------------------------------ | --------------------------------------------------------- |
+| trivial | one line, a typo, an obvious fix     | edit directly; no exploration, no thinking                |
+| small   | 1–2 files, a clear change            | targeted reads, inline, minimal thinking                  |
+| medium  | a feature slice, 3–6 files           | scoped reads, one plan, high effort only on the hard call |
+| large   | cross-cutting, a migration, an audit | phases; subagents only where they clearly pay off         |
 
-For a precise guardrail check, run it from the repo root and pass the current model id so the
-per-model bucket resolves:
+- The cheapest model that can do it; the expensive one for genuinely hard reasoning and design. Route
+  mechanical delegation to a cheap model through the agent's model option.
+- Thinking in proportion to the task; read by file and symbol name, never by blind scans; never re-read
+  what you already have.
+- No inflation: no passes, tests, refactors or "while I'm here" changes nobody asked for.
 
-```
-.claude/hooks/usage-limits --mode json --model <current-model-id>
-```
+## Subagents and fan-out
 
-Key fields: `session_pct`, `weekly_pct`, `zone`, `limiter`, `burn_pct_per_min` (+ `burn_source`),
-`min_to_exhaust`, `horizon_min`, `active_model_bucket`, `weekly_scoped`.
-`{"error": ...}` → plan by time only.
+- Spawn only for a clear net saving: read-heavy exploration across many files (roughly more than three or
+  four large ones) whose verbose output stays in the subagent. Editing one or two files, shell and git,
+  anything the main session finishes faster than a spawn starts — inline.
+- A fan-out of N agents costs about N times one: keep it narrow (2–3 agents, tight tool lists, small
+  outputs), sequential when the budget is tight, never unbounded.
+- Ultracode and the Workflow tool are for genuinely large, decomposable work: scout the real work-list
+  first, then about one agent per item — usually 2–6, tens only for a proven large sweep; hundreds is a
+  decomposition bug. State the count and the work-list before fanning out.
+- Reviewing a change is depth, not breadth: one agent, sequentially.
 
-## Step 1 — size the task by complexity, not by remaining budget
+## Zones narrow what you may do
 
-Classify by the _real work_ (files touched × passes needed), independent of how much window is left:
+| Zone   | 5-hour | Weekly and buckets | Behaviour                                                              |
+| ------ | ------ | ------------------ | ---------------------------------------------------------------------- |
+| GREEN  | < 50%  | < 80%              | spend to task size; subagents only for a clear saving                  |
+| YELLOW | 50–80% | 80–90%             | at most 2 parallel subagents, no heavy fan-out, no re-reads            |
+| ORANGE | 80–90% | 90–95%             | the first subagent of the session is asked about; essential edits only |
+| RED    | ≥ 90%  | ≥ 95%              | finish, write `.claude/CHECKPOINT.md`, no new tasks until the reset    |
 
-| Class   | Rough shape                       | Default depth                                                  |
-| ------- | --------------------------------- | -------------------------------------------------------------- |
-| trivial | one-line / typo / obvious fix     | edit directly; no thinking, no exploration                     |
-| small   | 1–2 files, clear change           | targeted reads, inline, minimal thinking                       |
-| medium  | a feature slice, 3–6 files        | scoped reads, one plan pass, high effort only on the hard call |
-| large   | cross-cutting / migration / audit | phase it; subagents only where they clearly pay off (Step 3)   |
+These are the shipped defaults; `.claude/usage-limits-config.json` may change them, and the hook reports
+the zone it actually computed. `limiter` names what binds: `session` (a model switch will not help —
+phase around the reset), `weekly` (move heavy work past the reset), `model-bucket` (only the active model
+is constrained — route heavy work to another).
 
-Complexity — not the budget — sets how much you read, whether you think, whether you delegate, how
-many passes, and which model.
-Never scale work _up_ just because the window has room.
-
-## Step 2 — pick the minimum sufficient effort
-
-- **Model:** the cheapest model that can do it by default; reserve the expensive model for genuinely
-  hard reasoning / design calls. Subagents take a model override — route mechanical delegation to a
-  cheap model.
-- **Thinking / effort:** proportional — none for trivial/small; high effort only on the hard fork.
-- **Context:** read by name (files/symbols), not blind directory scans; never re-read what you
-  already have; pull only what the task needs.
-- **No inflation:** do not add passes, tests, refactors, or "while I'm here" changes the user did
-  not ask for.
-
-## Step 3 — subagents & fan-out: spend only for a net saving
-
-Subagents are **not cheaper by default.**
-Each runs its own context window and reloads a bootstrap (agent system prompt + tools) on every
-spawn; multi-agent fan-out runs **~4–7× the tokens** of doing the same work in one thread.
-
-**Spawn only for a clear net win:** read-heavy exploration across **many files** (roughly >3–4 large
-files/dirs) where the verbose output stays isolated in the subagent and the main context stays
-clean.
-
-**Do it inline instead** when editing 1–2 files, running shell/git, or anything the main session
-finishes faster than a spawn would even start.
-
-**When you delegate, keep it cheap:** route mechanical work (search, summarize logs, extract data,
-audits) to a cheap model via the agent's model option; count fan-out of N agents as **N× the spend**
-(sequential when budget-tight, parallel only when time-tight and worth it); scope narrowly (2–3
-agents, tight tool lists, small outputs); never leave agents running unbounded.
-
-### Ultracode / Workflow mode — the highest-risk spend
-
-Ultracode and the Workflow tool fan out aggressively by design: one run can spawn dozens to hundreds
-of subagents, and `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` is the only thing that puts a hard
-per-session ceiling on it, if you have set one.
-Treat it as opt-in for **genuinely large, decomposable work only** — never the default for an
-ordinary task, and never by reflex because the word "ultracode" appeared.
-
-- **Scout first, then size the fleet to the real work-list.** Discover the actual items inline, then
-  spawn about **one agent per item** — no concrete work-list → no fan-out.
-- **Cap the count deliberately.** Most tasks that justify delegation need **2–6 agents**; tens only
-  for a proven large sweep. **Hundreds is a decomposition bug, not a plan** — stop and rethink, do
-  not launch.
-- **One-thread work stays in one thread**; state the count and the work-list before fanning out, and
-  if you cannot justify the number, cut it.
-
-## Step 4 — limits as a guardrail
-
-Zones only **narrow** what you may do (worst of session / weekly / active-model bucket):
-
-| Zone   | Session (5h) | Weekly & buckets (7d) | Behavior                                                                                                                                                                                                                          |
-| ------ | ------------ | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GREEN  | <50%         | <80%                  | spend to task size; subagents/fan-out only for a clear net saving                                                                                                                                                                  |
-| YELLOW | 50–80%       | 80–90%                | ≤2 parallel subagents, no heavy fan-outs, avoid re-reads                                                                                                                                                                           |
-| ORANGE | 80–90%       | 90–95%                | the **first** subagent of the session is asked about, and only that one — the gate asks once per session, because a gate that asks on every spawn is one people switch off. `change-reviewer` is never asked. Essential edits only |
-| RED    | ≥90%         | ≥95%                  | finish + write `.claude/CHECKPOINT.md`, no new tasks until reset; `change-reviewer` still runs                                                                                                                                     |
-
-Those are the shipped defaults; a project may set its own in `.claude/usage-limits-config.json`, and
-the hook reports the zone it actually computed rather than the one this table implies.
-
-The gate asks **once**, and it remembers only that it asked — a hook cannot learn what you answered.
-So refusing that one spawn stops that spawn and nothing after it. Treat the single prompt as the
-moment to decide the shape of the rest of the session, not as a per-spawn brake.
-
-**Reviewing a change is sequential — one agent, once.** The code runs in an order and the
-examination follows it; parallel readers lose the one thing that finds defects, which is a single
-mind holding the whole path from input to result. Fan-out is for breadth, and a revision is depth.
-
-`limiter` names the binding constraint: `session` (5h — switching model won't help, phase around the
-reset), `weekly` (7d — schedule heavy work past the reset), `model-bucket` (only the active model is
-constrained — route heavy work / subagents to a model with a freer bucket).
-Nearing a threshold is a signal to narrow scope, not permission to spend up to it.
-
-**Before an M/L/XL task** (>10 min active work): size to the task first, then use the numbers only
-as a guardrail — if the estimate would hit the window before you finish (roughly ≥ 0.8 × the
-forecast horizon), split at natural seams, checkpoint between phases (write `.claude/CHECKPOINT.md`:
-done / in-flight / next / open questions), and schedule the rest past the reset.
-The check exists to avoid hitting the wall mid-task, not to pack work up to the ceiling.
+Before a task of more than about ten minutes, size it first; if the estimate reaches about 0.8 of the
+forecast horizon, split it at natural seams, write `.claude/CHECKPOINT.md` (done, in flight, next, open
+questions) between phases, and schedule the rest past the reset.
 
 ## Checklist
 
-- [ ] Effort sized by the task's complexity, **not** by remaining budget; a small task was not inflated.
-- [ ] Cheapest sufficient model / thinking level chosen; expensive model reserved for hard reasoning.
-- [ ] Context read by name and scoped to the task; no blind scans, no re-reads.
-- [ ] Subagent / fan-out used **only** for a clear net token saving; trivial work inline; mechanical delegation on a cheap model; fan-out counted as N×. **The `change-reviewer` pass is outside this line entirely** — it is not weighed, not economised and not skipped for a small change.
-- [ ] Ultracode / Workflow fan-out reserved for genuinely large, decomposable work; fleet sized to a real scouted work-list (typically 2–6 agents; hundreds is a decomposition bug).
-- [ ] **Reviewing a change was done sequentially, by one agent** — not fanned out. The code runs in an order and the examination follows it; parallel readers lose the one thing that finds defects, which is a single mind holding the whole path from input to result.
-- [ ] Limits used as a guardrail (do not hit the wall / rate-limit), not as a target to fill; zone restrictions respected.
-- [ ] A large task that will not fit the window was split into phases with a checkpoint.
+- [ ] Effort sized by the task, not the remaining budget; a small task not inflated.
+- [ ] Cheapest sufficient model and thinking; context read by name, no re-reads.
+- [ ] Subagents only for a clear saving, mechanical work on a cheap model, a fan-out counted as N times.
+- [ ] Workflow fan-out sized to a scouted work-list.
+- [ ] Zone restrictions respected; the limits used as a guardrail, not a target.
+- [ ] A task that will not fit the window split into phases with a checkpoint.

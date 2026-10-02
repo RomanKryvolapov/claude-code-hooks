@@ -23,8 +23,8 @@ subagent, a skill about writing prompts, and the `settings.json` that wires it t
   file meant to be edited, and the two attribute lines whose absence only breaks somebody else's
   machine.
 
-**The rules are a set, not a menu.** Eight of the nine link to each other by name, and
-`change-reviewer.md` applies `code-quality.md` by name — so a rule copied on its own points the model
+**The rules are a set, not a menu.** Eight of the nine are tied to each other by name, and
+`change-reviewer.md` judges a change against the rules in `.claude/rules/` — so a rule copied on its own points the model
 at files that are not there, and nothing announces it. Copy them together, or drop one deliberately
 knowing what refers to it. Only `web-search-when-in-doubt.md` refers to nothing else.
 
@@ -67,7 +67,7 @@ cp scripts/play-sound-darwin-arm64 scripts/play-sound-linux-amd64 scripts/play-s
 
 The other eight rules, the subagent and the skill are optional as far as the hooks go. Ask whether
 they are wanted before copying them — they change how the model behaves, and eight rules is about
-1,400 lines in every session's context:
+830 lines in every session's context:
 
 ```sh
 cp .claude/rules/*.md          <target>/.claude/rules/
@@ -78,7 +78,7 @@ cp -r .claude/skills/dev-ai-prompt-generation <target>/.claude/skills/
 `change-reviewer.md` is not optional if `finishing-work.md` is installed — that rule launches it by
 name at its grading stage, and without the file the pass silently cannot run.
 
-**Copying a subset leaves dangling references.** Eight of the nine rules link to each other by name;
+**Copying a subset leaves dangling references.** Eight of the nine rules are tied to each other by name;
 `session-budget.md` alone, as the block above copies it, points at `finishing-work.md`, which is not
 there. That costs nothing at run time — the model simply cannot follow a link — but say so in the
 report, so nobody assumes the rule is complete. Copying all nine is the clean option; copying a
@@ -98,10 +98,15 @@ them there instead and leave its layout alone. The launcher searches all three.
 If the target has no `settings.json`, copy this repository's whole. Otherwise merge these into the
 existing document, leaving every other setting untouched. Add nothing twice: if an entry already
 runs `usage-limits` or `play-sound` for the same event, repoint that entry's `command` rather than
-appending a second one.
+appending a second one. The `env` entry raises Claude Code's per-session cap on web searches, which
+the rule about searching would otherwise run into; if the target already sets that variable, keep
+the larger value.
 
 ```json
 {
+  "env": {
+    "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION": "500"
+  },
   "statusLine": {
     "type": "command",
     "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/usage-limits\" --mode statusline",

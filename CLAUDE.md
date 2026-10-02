@@ -21,16 +21,16 @@ to install — no Node, no Python, no Go.
   `finishing-work`, `merge-conflicts`, `response-style` and `web-search-when-in-doubt`. REFERENCE.md
   describes each one in full.
 - **`.claude/agents/change-reviewer.md`** — the independent grading pass `finishing-work` launches:
-  it gets the diff and the requirement and nothing else, and is told to refute rather than confirm.
+  it gets the diff and the requirement and nothing else, and is told to try to break it and report only what it verified.
 - **`.claude/skills/dev-ai-prompt-generation/`** — a hub plus 30 reference files on writing prompts,
   skills, rules and `CLAUDE.md`; unlike a rule, it costs nothing until it is used.
 - **`.claude/settings.json`**, **`.claude/usage-limits-config.json`** and **`.gitattributes`** — the
   wiring, the one file meant to be edited, and the two attribute lines (LF launchers, union merge for
   the log) whose absence only ever breaks somebody else's machine.
 
-**The rules are a set, not a menu.** Eight of the nine link to each other by name, and the subagent
-applies the quality rule by name, so a rule installed alone points the model at files that are not
-there. Only `web-search-when-in-doubt` refers to nothing else.
+**The rules are a set, not a menu.** Eight of the nine are tied to each other by name, and the subagent
+judges a change against the rules the project wrote down, so a rule installed alone points the model
+at files that are not there. Only `web-search-when-in-doubt` refers to nothing else.
 
 **Across the groups there are four ties, and they are the only ones.** `session-budget` is the other
 half of the limits hook — the hook supplies numbers, the rule is what makes the model act on them,
@@ -61,3 +61,17 @@ The Go sources are `scripts/usage-limits-src/`, `scripts/work-audit-src/` and
 `scripts/play-sound-src/`. Every tunable default of the limits hook is declared in
 `scripts/usage-limits-src/constants.go`; the config file only overrides it. Rebuild with
 `sh scripts/<name>-src/build.sh`, test with `go -C scripts/usage-limits-src test ./...`.
+
+The repository is under the MIT license, in `LICENSE`.
+
+## Branch and runtime
+
+`master` is the working branch. The hooks build with Go 1.27.1; the committed binaries are the only
+thing that ships, so a Go upgrade means rebuilding all of them in the same change.
+
+## Gates
+
+`go -C scripts/usage-limits-src vet ./...` and `go -C scripts/usage-limits-src test ./...` for a
+change to the limits hook. For any change to a hook's source, rebuild it and commit the binaries with
+it. The limits hook builds reproducibly, so a rebuild of its unchanged source shows no diff; the other
+two stamp version-control data and may differ between checkouts.

@@ -33,6 +33,7 @@ another by name, so they are installed as a set rather than picked one at a time
 | [The Go sources](#the-go-sources-and-rebuilding)                                 | `scripts/*-src/`                           | The source of all three hooks, a build script each, and the test suite behind the limits hook's working-week arithmetic            |
 | [`README.md`](README.md)                                                         | repository root                            | The overview: what this is, how to read the status line, and how to install it                                                     |
 | [`AGENTS.md`](AGENTS.md)                                                         | repository root                            | The install procedure, written for Claude Code to follow rather than for a person to read                                          |
+| [`LICENSE`](LICENSE)                                                             | repository root                            | The MIT license                                                                                                                    |
 | [`CLAUDE.md`](CLAUDE.md)                                                         | repository root                            | The short orientation Claude Code loads when working _on this repository_                                                          |
 
 ```
@@ -53,12 +54,12 @@ management/logs/                    where work-audit writes (this repository ign
 
 ### How the parts connect
 
-**The rules are a set, not a menu.** Eight of the nine link to each other by name — the revision
+**The rules are a set, not a menu.** Eight of the nine are tied to each other by name — the revision
 rule sends you to the pull rule for its first stage, to the quality rule for its architectural
 judgement and to the answer rule for the shape of its report; the autonomy rule and the fork rule are
 written as two halves of one idea. Install one alone and the model is handed instructions pointing at
 files that are not there, which nothing announces. Only `web-search-when-in-doubt` refers to nothing
-else. The subagent belongs to that set too: it applies the quality rule by name.
+else. The subagent belongs to that set too: it judges a change against the rules the project wrote down.
 
 Across the groups there are four ties, and they are the only ones:
 
@@ -426,7 +427,7 @@ notification hook must never interrupt a session.
 
 # The rules
 
-`.claude/rules/`, nine files, about 1,500 lines. They are the half of this repository that changes
+`.claude/rules/`, nine files, about 900 lines. They are the half of this repository that changes
 how the model _works_ rather than what it can see: when to stop, when not to, what "finished" means,
 what a report has to contain, and what may never be resolved by force.
 
@@ -466,8 +467,8 @@ plainly that **reviewing a change is one agent working sequentially, not a fan-o
 in an order, and parallel readers lose the single mind holding the whole path from input to result.
 The `change-reviewer` pass is the one thing outside the calculation entirely — never weighed, never
 economised, never skipped because the change looked small. The single thing that can still stop it is
-a hard per-session cap on spawns, and then the revision has to say so and fall back to a cold
-self-pass rather than quietly skipping the grading.
+the agent failing to launch at all — Claude Code no longer caps spawns per session — and then the
+revision has to say so and fall back to a cold self-pass rather than quietly skipping the grading.
 
 Then: what each zone allows, what the binding limiter means for whether switching model would help at
 all, why Ultracode and the Workflow tool are the highest-risk spend available — one run can fan out
@@ -562,8 +563,7 @@ prompt, which is cheap, looks like work, and often moves the number on the next 
 exactly what makes it dangerous. Prompts do not fail loudly when they get too heavy; they get
 unstable, the same instruction wins on Tuesday and loses on Thursday, and nobody can say which of the
 forty lines is doing the damage. Diagnose from what actually reached the model, in send order, and
-fix it there. A worked example runs through a scripted interview that kept losing its last question,
-where the cause was the running order rather than anything the instructions said.
+fix it there.
 
 Then the two opposite failures — under-designed (special cases, duplicated logic, names that lie,
 state nobody owns) and over-designed (an abstraction with one implementation, an extension point for
@@ -649,6 +649,12 @@ not work, and each new fix digs deeper into a wrong assumption. The vendor's own
 the version actually in use is the authority; forum posts and recollection are only ways of finding
 it faster. If the search fails too, stop and ask rather than guessing down a false path.
 
+Where a project runs the Context7 documentation server, the rule sends library questions there first —
+it is version-aware — while anything the work depends on is still confirmed in the vendor's own
+documentation. It also says how to keep a Context7 key out of the repository: never in a prompt,
+because `work-audit` records prompts verbatim into the committed log, and never through the vendor's
+setup command, which writes the key into the shared server list.
+
 ---
 
 # The `change-reviewer` subagent
@@ -660,9 +666,10 @@ last stage.
 which is the whole design: an author who knows the intent reads the code as the intent and cannot see
 the gap between the two. A reviewer with only the code can.
 
-It is told to **refute rather than confirm** — a review ending "looks good" has usually failed to
-look — and, if it genuinely cannot break the change, to say so and list what it tried, which reads
-very differently from an unexamined approval. It reads in execution order, judges against the
+It is told to **try to break the change and report only what it verified** — a wrong result, a
+broken caller, a broken written rule, a claim the code does not back — and, if it genuinely cannot
+break it, to answer "no findings" and list what it tried, which reads very differently from an
+unexamined approval. It reads in execution order, judges against the
 requirement rather than against taste, hunts down every other consumer of what the diff touched (the
 highest-yield check there is, and the defect class that ships most often), builds failure hypotheses
 instead of waiting for them, and runs the code. It may not edit anything — no fixes, no staging, no
@@ -718,6 +725,10 @@ Code's events onto the three hooks:
 | `SubagentStart`, `SubagentStop`    | `work-audit`                               |
 | `PostToolUse` (AskUserQuestion)    | `work-audit`                               |
 
+Beside the wiring, an `env` block sets `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION` to 500. Claude Code
+caps web searches at 200 per session by default and refuses the rest, and `web-search-when-in-doubt`
+is a rule that asks for searches, so a long session would otherwise run into the cap halfway.
+
 Every command is written against `${CLAUDE_PROJECT_DIR}`, so it works whatever directory the session
 was started from. The status line also sets `refreshInterval: 30`, which redraws it every 30 seconds
 so its countdowns move while nothing else is happening. The audit entries run asynchronously — the
@@ -755,8 +766,9 @@ whole reason a copy works without a Go toolchain.
 # The Go sources, and rebuilding
 
 `scripts/usage-limits-src/`, `scripts/work-audit-src/` and `scripts/play-sound-src/` — the full source
-of all three hooks, each with its own `README.md` covering that hook in implementation terms, and its
-own `build.sh` that cross-compiles that hook for all three platforms. Every tunable default of the
+of all three hooks, each with its own `build.sh` that cross-compiles that hook for all three
+platforms. A short `scripts/CLAUDE.md` beside them carries the build and commit notes Claude Code
+needs when it works in that folder. Every tunable default of the
 limits hook is declared in `scripts/usage-limits-src/constants.go`; the config file only overrides it.
 
 Rebuilding is only needed if you change the sources. The committed binaries are what make a copy work
