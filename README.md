@@ -190,3 +190,8 @@ For anything else, such as an Intel Mac or an ARM Linux machine, you can build t
 model's block, how working time is counted, every setting and what the hook checks in it, what the
 session log records, which hook runs on which Claude Code event, and how to build from source.
 [AGENTS.md](AGENTS.md) is the install procedure.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, change it and ship it in your own projects; keep the copyright
+notice with the copy.
