@@ -32,6 +32,7 @@ another by name, so they are installed as a set rather than picked one at a time
 | [`.gitattributes` and `.gitignore`](#gitattributes-and-gitignore)                | repository root                            | LF-only launchers, binaries marked binary, a union merge for the audit log, and what this repository deliberately does not track   |
 | [The Go sources](#the-go-sources-and-rebuilding)                                 | `scripts/*-src/`                           | The source of all three hooks, a build script each, and the test suite behind the limits hook's working-week arithmetic            |
 | [`README.md`](README.md)                                                         | repository root                            | The overview: what this is, how to read the status line, and how to install it                                                     |
+| [`.claude/README.md`](.claude/README.md)                                         | `.claude/`                                 | A reference for people: Claude Code's slash commands, `settings.json` keys and environment variables                               |
 | [`AGENTS.md`](AGENTS.md)                                                         | repository root                            | The install procedure, written for Claude Code to follow rather than for a person to read                                          |
 | [`LICENSE`](LICENSE)                                                             | repository root                            | The MIT license                                                                                                                    |
 | [`CLAUDE.md`](CLAUDE.md)                                                         | repository root                            | The short orientation Claude Code loads when working _on this repository_                                                          |
@@ -45,6 +46,7 @@ another by name, so they are installed as a set rather than picked one at a time
   sounds/notify.wav                 what play-sound plays
   settings.json                     events → hooks, and the status line
   usage-limits-config.json          working week, time zone, zone thresholds
+  README.md                         Claude Code's own commands and settings, for people
 scripts/
   usage-limits-*  work-audit-*  play-sound-*   committed binaries, three platforms each
   *-src/                                       Go sources and a build script each; tests for the
