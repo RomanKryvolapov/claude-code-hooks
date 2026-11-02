@@ -6,9 +6,9 @@
 // current OS. No Node runtime required — this is the whole point of the port.
 //
 // It injects subscription-window usage into the model's context, powers the
-// status line, gates subagent spawns, and exposes JSON for planning.
-// Model-aware: the zone accounts for the per-model weekly bucket of the ACTIVE
-// model (and, in gate mode, of the model being spawned).
+// status line, and exposes JSON for planning. Model-aware: the zone accounts for
+// the per-model weekly bucket of the ACTIVE model. The 5-hour window is shown only
+// where the API reports one — a verified Ultra account has none.
 //
 // Data source: https://api.anthropic.com/api/oauth/usage (account-global,
 // covers ALL sessions on this subscription), authenticated with the local
@@ -17,9 +17,9 @@
 // macOS. See readAccessToken.
 //
 // The status line draws a picture for a person. Three lines: CONTEXT (how full this session's
-// context window is, one gauge cell per percent), then the limits side by side (5-hour window,
-// 7-day window, then each per-model weekly bucket) as LIMIT (budget spent) over the share of the
-// window gone — comparing the two says whether the spend is ahead of the clock. That second gauge
+// context window is, one gauge cell per percent), then the limits side by side (the 5-hour window
+// where there is one, the 7-day window, then each per-model weekly bucket) as LIMIT (budget
+// spent) over the share of the window gone — comparing the two says whether the spend is ahead of the clock. That second gauge
 // is calendar time on the 5-hour row (captioned TIME) and working time on the weekly rows
 // (captioned WORK), weighted per weekday; see workingWeek. It is coloured, fitted to the
 // terminal, and carries the prompt cache and token counts beside CONTEXT; see statusline.go.
@@ -30,12 +30,12 @@
 // Modes (CLI flags, case-insensitive; PowerShell-style -Mode also accepted):
 //   --mode inject --event SessionStart      <usage_limits> block, with <model> -> model context
 //   --mode inject --event UserPromptSubmit  <usage_limits> block                -> model context
-//   --mode gate                             PreToolUse Agent|Task|Workflow gate
 //   --mode json [--model <id>]              full computed state as JSON
 //   --mode statusline                       the picture, painted, with cache and token counts
 //
-// Never breaks the session: on any error it exits 0 — the injection and gate
-// modes stay silent, statusline and JSON print a short unavailable marker.
+// Never breaks the session: on any error it exits 0 — the injection mode stays
+// silent, statusline and JSON print a short unavailable marker. Any other mode,
+// the retired "gate" included, prints nothing.
 
 package main
 
@@ -121,7 +121,6 @@ func (a argSet) numOr(key string, def float64) float64 {
 var (
 	claudeDir      string
 	cachePath      string
-	gateAsksPath   string
 	tokenCachePath string
 	credPath       string
 )
@@ -169,16 +168,15 @@ type usageRaw struct {
 }
 
 type sample struct {
-	T  string             `json:"t"`
-	S5 float64            `json:"s5"`
-	S7 float64            `json:"s7"`
-	R5 string             `json:"r5"`
-	R7 string             `json:"r7"`
-	Bk map[string]float64 `json:"bk"`
+	T  string  `json:"t"`
+	S5 float64 `json:"s5"`
+	S7 float64 `json:"s7"`
+	R5 string  `json:"r5"`
+	R7 string  `json:"r7"`
 }
 
 // cacheFile holds only what the usage API said and what was measured from it. A figure Claude Code
-// handed the status line is never written here: the gate and the injected block read this file
+// handed the status line is never written here: the injected block and the JSON read this file
 // too, and they cannot tell where a number came from.
 type cacheFile struct {
 	FetchedAt string          `json:"fetched_at"`
@@ -188,6 +186,9 @@ type cacheFile struct {
 	// fetch period either way: an endpoint that has started refusing — it rate-limits — is not
 	// asked again by every status-line refresh of every open session.
 	TriedAt string `json:"tried_at,omitempty"`
+	// NotBefore is when the API, refusing with a 429, said to ask again (its Retry-After). Until then
+	// it is not asked at all: asking every fetch period through the pause only kept it going.
+	NotBefore string `json:"not_before,omitempty"`
 }
 
 type scopedBucket struct {
@@ -312,35 +313,60 @@ func keychainLogin() []byte {
 	return bytes.TrimSpace(out)
 }
 
-func fetchUsage() json.RawMessage {
+// fetchUsage asks the usage API. Besides the document, it returns how long the API asked to be left
+// alone when it refused with a 429 — zero otherwise.
+func fetchUsage() (json.RawMessage, time.Duration) {
 	token := readAccessToken()
 	if token == "" {
-		return nil
+		return nil, 0
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/api/oauth/usage", nil)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	req.Header.Set("User-Agent", usageUserAgent)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	defer res.Body.Close()
+	if res.StatusCode == http.StatusTooManyRequests {
+		return nil, retryAfter(res.Header.Get("Retry-After"), time.Now())
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil
+		return nil, 0
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil
+		return nil, 0
 	}
 	if !json.Valid(body) {
-		return nil
+		return nil, 0
 	}
-	return json.RawMessage(body)
+	return json.RawMessage(body), 0
+}
+
+// retryAfter reads a Retry-After header — seconds, or an HTTP date — capped at maxRetryAfter, so a
+// bogus value cannot silence the hook for days. Zero when it is missing, unreadable or already past.
+func retryAfter(h string, now time.Time) time.Duration {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0
+	}
+	var d time.Duration
+	if n, err := strconv.Atoi(h); err == nil {
+		d = time.Duration(n) * time.Second
+	} else if t, err := http.ParseTime(h); err == nil {
+		d = t.Sub(now)
+	}
+	if d <= 0 {
+		return 0
+	}
+	return min(d, maxRetryAfter)
 }
 
 func cleanModelString(m string) string {
@@ -479,9 +505,22 @@ func parseTime(s string) (time.Time, bool) {
 	return t, true
 }
 
+// formatSet is a time as a sample stores it, and "" for the zero time.
+func formatSet(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339Nano)
+}
+
 // --- state --------------------------------------------------------------------
 
 type state struct {
+	// hasSession says the API reports a 5-hour window at all; without one s5, r5Local, zone5 and
+	// minToReset5 say nothing. burnWindow is the window burn, pace and the forecast are measured in:
+	// "session", "weekly", or "" when no window carries a reset time.
+	hasSession                         bool
+	burnWindow                         string
 	s5, s7                             float64
 	r5Local, r7Local                   time.Time
 	burn                               float64
@@ -532,9 +571,9 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 			}
 		}
 	}
-	triedAt := ""
+	triedAt, notBefore := "", ""
 	if cache != nil {
-		triedAt = cache.TriedAt
+		triedAt, notBefore = cache.TriedAt, cache.NotBefore
 	}
 	if rawBytes == nil {
 		askedRecently := false
@@ -542,9 +581,18 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 			since := now.Sub(t)
 			askedRecently = since >= 0 && since < time.Duration(fetchTTLSec)*time.Second
 		}
+		// A pause longer than any the hook would write is a clock that moved back or a value from
+		// elsewhere, and is not honoured: it would silence the hook for as long as it says.
+		if t, ok := parseTime(notBefore); ok && now.Before(t) && t.Sub(now) <= maxRetryAfter {
+			askedRecently = true
+		}
 		if !askedRecently {
-			rawBytes = fetchUsage()
-			triedAt = now.Format(time.RFC3339Nano)
+			var wait time.Duration
+			rawBytes, wait = fetchUsage()
+			triedAt, notBefore = now.Format(time.RFC3339Nano), ""
+			if wait > 0 {
+				notBefore = now.Add(wait).Format(time.RFC3339Nano)
+			}
 		}
 		if rawBytes != nil {
 			fetchedFresh = true
@@ -580,41 +628,36 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 	if fetchedFresh {
 		fresh = rawBytes
 	}
-	if raw.FiveHour == nil {
+	if raw.FiveHour == nil && raw.SevenDay == nil {
 		// Nothing to draw from, but the attempt is still written down, so that the API is not
 		// asked again before its time.
-		rememberTheAttempt(cache, triedAt, fresh)
+		rememberTheAttempt(cache, triedAt, notBefore, fresh)
 		return nil
 	}
 
-	s5 := raw.FiveHour.Utilization
-	var s7 float64
+	// The 5-hour window exists only where the API reports one. A verified Ultra account has none —
+	// five_hour is null and limits[] holds only weekly entries — and a 0% row drawn for it would be a
+	// figure nobody measured. One that is reported but has not started yet carries no reset time.
+	hasSession := raw.FiveHour != nil
+	var s5, s7 float64
+	var r5, r7 time.Time
+	if hasSession {
+		s5 = raw.FiveHour.Utilization
+		r5, _ = parseTime(raw.FiveHour.ResetsAt)
+	}
 	if raw.SevenDay != nil {
 		s7 = raw.SevenDay.Utilization
+		r7, _ = parseTime(raw.SevenDay.ResetsAt)
 	}
-	if overrideS5 >= 0 {
+	if overrideS5 >= 0 && hasSession {
 		s5 = overrideS5
 	}
 	if overrideS7 >= 0 {
 		s7 = overrideS7
 	}
-	r5, ok5 := parseTime(raw.FiveHour.ResetsAt)
-	if !ok5 {
-		// A 5-hour window that has not started carries no reset time: nothing to draw from either,
-		// and the attempt is written down the same way. Given up before it, every refresh of every
-		// open session asked the API again (review of PR 697).
-		rememberTheAttempt(cache, triedAt, fresh)
-		return nil
-	}
-	var r7 time.Time
-	if raw.SevenDay != nil {
-		r7, _ = parseTime(raw.SevenDay.ResetsAt)
-	}
-	r5Ms := float64(r5.UnixMilli())
 
 	// --- per-model scoped weekly buckets (dynamic, from limits[]) ---------------
 	var scoped []scopedBucket
-	bkMap := map[string]float64{}
 	for _, lim := range raw.Limits {
 		if lim.Kind == "weekly_scoped" && lim.Scope != nil && lim.Scope.Model != nil {
 			e := scopedBucket{Model: lim.Scope.Model.DisplayName, Percent: lim.Percent}
@@ -622,80 +665,110 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 				e.ResetsAt = lim.ResetsAt
 			}
 			scoped = append(scoped, e)
-			bkMap[e.Model] = e.Percent
 		}
 	}
 
-	// --- burn-rate samples (kept per 5h window, pruned on window change) --------
+	// --- the window burn is measured on ----------------------------------------
+	// The shortest window that is running: the 5-hour one where the API reports a started one, the
+	// weekly one otherwise. None at all when neither carries a reset time to count back from.
+	burnWindow := ""
+	var pct float64
+	var reset time.Time
+	windowMin := 0.0
+	switch {
+	case hasSession && !r5.IsZero():
+		burnWindow, pct, reset, windowMin = "session", s5, r5, sessionWindowMin
+	case !r7.IsZero():
+		burnWindow, pct, reset, windowMin = "weekly", s7, r7, weeklyWindowMin
+	}
+	resetMs := float64(reset.UnixMilli())
+	// sampleOf is a sample's figure and reset time in that window.
+	sampleOf := func(smp sample) (float64, string) {
+		if burnWindow == "session" {
+			return smp.S5, smp.R5
+		}
+		return smp.S7, smp.R7
+	}
+
+	// --- burn-rate samples (kept per window, pruned on window change) -----------
 	var srcSamples []sample
 	if cache != nil {
 		srcSamples = cache.Samples
 	}
 	var kept []sample
-	for _, smp := range srcSamples {
-		sr, ok := parseTime(smp.R5)
-		if !ok {
-			continue
-		}
-		st, ok := parseTime(smp.T)
-		if !ok {
-			continue
-		}
-		sameWindow := math.Abs((float64(sr.UnixMilli())-r5Ms)/1000) < 120
-		recent := (nowMs-float64(st.UnixMilli()))/60000 < sampleMaxAgeMin
-		notAfterReset := smp.S5 <= s5+1.0
-		if sameWindow && recent && notAfterReset {
-			kept = append(kept, smp)
+	if burnWindow != "" {
+		for _, smp := range srcSamples {
+			v, rs := sampleOf(smp)
+			sr, ok := parseTime(rs)
+			if !ok {
+				continue
+			}
+			st, ok := parseTime(smp.T)
+			if !ok {
+				continue
+			}
+			sameWindow := math.Abs((float64(sr.UnixMilli())-resetMs)/1000) < 120
+			recent := (nowMs-float64(st.UnixMilli()))/60000 < sampleMaxAgeMin
+			notAfterReset := v <= pct+1.0
+			if sameWindow && recent && notAfterReset {
+				kept = append(kept, smp)
+			}
 		}
 	}
 	if fetchedFresh {
 		kept = append(kept, sample{
 			T: now.Format(time.RFC3339Nano), S5: s5, S7: s7,
-			R5: r5.Format(time.RFC3339Nano), R7: r7.Format(time.RFC3339Nano), Bk: bkMap,
+			R5: formatSet(r5), R7: formatSet(r7),
 		})
 	}
 
 	// --- burn %/min: sampled if we have a >=3 min span, else pace-based ---------
-	winStartMs := r5Ms - sessionWindowMin*60*1000
-	elapsedMin := (nowMs - winStartMs) / 60000
-	if elapsedMin < 1 {
-		elapsedMin = 1
-	}
-	burn := s5 / elapsedMin
-	burnSource := "pace"
-	if len(kept) >= 2 {
-		first := kept[0]
-		last := kept[len(kept)-1]
-		ft, _ := parseTime(first.T)
-		lt, _ := parseTime(last.T)
-		spanMin := float64(lt.UnixMilli()-ft.UnixMilli()) / 60000
-		if spanMin >= 3 {
-			sampled := (last.S5 - first.S5) / spanMin
-			if sampled > 0 {
-				burn = sampled
-				burnSource = "sampled"
-			} else {
-				burn = 0
-				burnSource = "idle"
+	burn, burnSource, paceRatio := 0.0, "none", 0.0
+	minToExhaust, horizonMin := math.Inf(1), math.Inf(1)
+	if burnWindow != "" {
+		elapsedMin := (nowMs - (resetMs - windowMin*60*1000)) / 60000
+		if elapsedMin < 1 {
+			elapsedMin = 1
+		}
+		burn = pct / elapsedMin
+		burnSource = "pace"
+		// Samples measure the 5-hour window only. The API reports whole percents, and on the weekly
+		// window one 1% step between two samples minutes apart reads as a rate that empties the week
+		// in hours — while the pace says the spend is well behind the clock. There the pace stands.
+		if len(kept) >= 2 && burnWindow == "session" {
+			first, last := kept[0], kept[len(kept)-1]
+			ft, _ := parseTime(first.T)
+			lt, _ := parseTime(last.T)
+			spanMin := float64(lt.UnixMilli()-ft.UnixMilli()) / 60000
+			if spanMin >= 3 {
+				fv, _ := sampleOf(first)
+				lv, _ := sampleOf(last)
+				if sampled := (lv - fv) / spanMin; sampled > 0 {
+					burn = sampled
+					burnSource = "sampled"
+				} else {
+					burn = 0
+					burnSource = "idle"
+				}
 			}
+		}
+		if burn > 0.001 {
+			minToExhaust = (100 - pct) / burn
+		}
+		horizonMin = math.Min(minToExhaust, (resetMs-nowMs)/60000)
+		if elapsedFrac := (elapsedMin / windowMin) * 100; elapsedFrac > 0.5 {
+			paceRatio = pct / elapsedFrac
 		}
 	}
 
-	// --- forecast ---------------------------------------------------------------
-	minToReset5 := (r5Ms - nowMs) / 60000
+	// --- time to each reset -----------------------------------------------------
+	minToReset5 := math.Inf(1)
+	if !r5.IsZero() {
+		minToReset5 = (float64(r5.UnixMilli()) - nowMs) / 60000
+	}
 	minToReset7 := math.Inf(1)
 	if !r7.IsZero() {
 		minToReset7 = (float64(r7.UnixMilli()) - nowMs) / 60000
-	}
-	minToExhaust := math.Inf(1)
-	if burn > 0.001 {
-		minToExhaust = (100 - s5) / burn
-	}
-	horizonMin := math.Min(minToExhaust, minToReset5)
-	paceRatio := 0.0
-	elapsedFrac := (elapsedMin / sessionWindowMin) * 100
-	if elapsedFrac > 0.5 {
-		paceRatio = s5 / elapsedFrac
 	}
 
 	// --- active model + its bucket ----------------------------------------------
@@ -724,33 +797,17 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 				minToBucketReset = (float64(br.UnixMilli()) - nowMs) / 60000
 			}
 		}
-		type pt struct{ t, v float64 }
-		var pts []pt
-		for _, smp := range kept {
-			if smp.Bk == nil {
-				continue
+		// The bucket's own pace over its week. Like the weekly window, it is reported in whole
+		// percents, so a rate taken between samples minutes apart would read one 1% step as a cap
+		// reached in hours. Without a reset to count back from, the window's rate carried over to the
+		// weekly scale is the estimate.
+		if bucketResetLocal != nil {
+			elapsed := (nowMs - (float64(bucketResetLocal.UnixMilli()) - weeklyWindowMin*60*1000)) / 60000
+			if elapsed >= 1 && bucketPct > 0 {
+				bucketBurn, bucketBurnSource = bucketPct/elapsed, "pace"
 			}
-			v, ok := smp.Bk[activeBucket.Model]
-			if !ok {
-				continue
-			}
-			if v <= bucketPct+1.0 {
-				st, _ := parseTime(smp.T)
-				pts = append(pts, pt{float64(st.UnixMilli()), v})
-			}
-		}
-		if len(pts) >= 2 {
-			spanMin := (pts[len(pts)-1].t - pts[0].t) / 60000
-			if spanMin >= 3 {
-				bs := (pts[len(pts)-1].v - pts[0].v) / spanMin
-				if bs > 0 {
-					bucketBurn = bs
-					bucketBurnSource = "sampled"
-				}
-			}
-		}
-		if bucketBurn <= 0.0001 && burn > 0.001 && burnSource != "idle" {
-			bucketBurn = burn * (sessionWindowMin / weeklyWindowMin)
+		} else if burn > 0.001 && (burnSource == "pace" || burnSource == "sampled") {
+			bucketBurn = burn * (windowMin / weeklyWindowMin)
 			bucketBurnSource = "estimated"
 		}
 		if bucketBurn > 0.0001 {
@@ -761,25 +818,25 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 		}
 	}
 
-	// --- zones: worst of session, overall weekly, ACTIVE model's bucket ---------
-	zone5 := zoneOf(s5, z5)
+	// --- zones: worst of session (where there is one), weekly, ACTIVE model's bucket
+	zone5 := ""
+	if hasSession {
+		zone5 = zoneOf(s5, z5)
+	}
 	zone7 := zoneOf(s7, z7)
 	zoneBucket := "GREEN"
 	if bucketPct >= 0 {
 		zoneBucket = zoneOf(bucketPct, z7)
 	}
-	zone := zone5
-	for _, cand := range []string{zone7, zoneBucket} {
-		if rank[cand] > rank[zone] {
-			zone = cand
+	// The worst one binds; on a tie the longer window is named, since it is the slower to clear.
+	zone, limiter := "GREEN", ""
+	for _, c := range []struct {
+		name, zone string
+		on         bool
+	}{{"session", zone5, hasSession}, {"weekly", zone7, true}, {"model-bucket", zoneBucket, bucketPct >= 0}} {
+		if c.on && rank[c.zone] >= rank[zone] {
+			zone, limiter = c.zone, c.name
 		}
-	}
-	limiter := "session"
-	if zone == zone7 && rank[zone7] >= rank[zone5] {
-		limiter = "weekly"
-	}
-	if zone == zoneBucket && rank[zoneBucket] >= rank[zone7] && rank[zoneBucket] >= rank[zone5] && bucketPct >= 0 {
-		limiter = "model-bucket"
 	}
 
 	// --- persist cache ----------------------------------------------------------
@@ -793,7 +850,7 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 			samples = cache.Samples
 		}
 	}
-	out := cacheFile{Raw: rawBytes, Samples: samples, TriedAt: triedAt}
+	out := cacheFile{Raw: rawBytes, Samples: samples, TriedAt: triedAt, NotBefore: notBefore}
 	switch {
 	case fetchedFresh:
 		out.FetchedAt = now.Format(time.RFC3339Nano)
@@ -803,6 +860,7 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 	saveCache(out)
 
 	return &state{
+		hasSession: hasSession, burnWindow: burnWindow,
 		s5: s5, s7: s7,
 		r5Local: r5, r7Local: r7,
 		burn: burn, burnSource: burnSource, paceRatio: paceRatio,
@@ -828,7 +886,7 @@ func getState(args argSet, activeModelID string, live *usageRaw) *state {
 // from, so that it is not asked again before its time. An answer the API did give — a window that
 // has not started — replaces the cached one: left behind the new attempt, the last window's figures,
 // its reset already past, were drawn until the next fetch, and a spent window read RED.
-func rememberTheAttempt(cache *cacheFile, triedAt string, fresh json.RawMessage) {
+func rememberTheAttempt(cache *cacheFile, triedAt, notBefore string, fresh json.RawMessage) {
 	if cache == nil {
 		cache = &cacheFile{}
 	}
@@ -836,7 +894,7 @@ func rememberTheAttempt(cache *cacheFile, triedAt string, fresh json.RawMessage)
 		return
 	}
 	kept := *cache
-	kept.TriedAt = triedAt
+	kept.TriedAt, kept.NotBefore = triedAt, notBefore
 	if fresh != nil {
 		kept.Raw = fresh
 		kept.FetchedAt = triedAt
@@ -855,8 +913,8 @@ func saveCache(c cacheFile) {
 }
 
 // writeFileAtomic replaces a file in one step, so a reader running at the same moment — another
-// session's status line, the gate — gets the old document or the new one and never half of each. A
-// torn read is taken for a missing cache, which throws the burn samples away with it. The one
+// session's status line, the injected block — gets the old document or the new one and never half
+// of each. A torn read is taken for a missing cache, which throws the burn samples away with it. The one
 // exception is the in-place fallback below, taken only when the rename is refused.
 func writeFileAtomic(path string, b []byte) error {
 	sweepTemps(path)
@@ -1052,6 +1110,9 @@ func shortTokens(n float64) string {
 // everything after it is prose, so the extra context lines line up with the limits above them.
 type statusRow struct {
 	label string
+	// limit is the limit's name in the model's block — "5-hour", "7-day", "Fable weekly bucket";
+	// empty on the text rows.
+	limit string
 	pct   float64
 	// reset is the clock time the limit resets at — "04:00" for today, "MON 18:00" once the cell
 	// needs a weekday. Always labelled "RESET AT": it is a point in time, never a wait. The wait
@@ -1681,8 +1742,9 @@ func weeklyWindowGauge(reset, now time.Time) (string, float64) {
 	return usageBar(pct), pct
 }
 
-// limitRows builds one table row per limit the API reports: the session window, the weekly window,
-// then every per-model weekly bucket — whether or not it belongs to the model in use.
+// limitRows builds one table row per limit the API reports: the session window where there is one,
+// the weekly window, then every per-model weekly bucket — whether or not it belongs to the model in
+// use.
 func limitRows(st *state) []statusRow {
 	now := time.Now()
 	// The weekly gauges alone move to the working-time scale; the session window is five hours of one
@@ -1691,18 +1753,19 @@ func limitRows(st *state) []statusRow {
 	if !workingScaleIsCalendar() {
 		weeklyCaption = captionWorking
 	}
-	sessionReset, sessionAfter := resetCells(&st.r5Local, st.minToReset5, false)
-	sessionBar, sessionPct := windowGauge(st.minToReset5, sessionWindowMin)
-	rows := []statusRow{{
-		label:     "5 HOURS",
-		pct:       st.s5,
-		reset:     sessionReset,
-		windowBar: sessionBar,
-		windowPct: sessionPct,
-		after:     sessionAfter,
-	}}
+	var rows []statusRow
+	// The 5-hour row only where the API reports the window: a plan without one gets no row rather
+	// than a 0% nobody measured. A window that has not started yet has no reset to draw.
+	if st.hasSession {
+		session := statusRow{label: "5 HOURS", limit: "5-hour", pct: st.s5}
+		if !st.r5Local.IsZero() {
+			session.reset, session.after = resetCells(&st.r5Local, st.minToReset5, false)
+			session.windowBar, session.windowPct = windowGauge(st.minToReset5, sessionWindowMin)
+		}
+		rows = append(rows, session)
+	}
 
-	weekly := statusRow{label: "7 DAYS", pct: st.s7}
+	weekly := statusRow{label: "7 DAYS", limit: "7-day", pct: st.s7}
 	if !st.r7Local.IsZero() {
 		weekly.reset, weekly.after = resetCells(&st.r7Local, st.minToReset7, true)
 		weekly.windowBar, weekly.windowPct = weeklyWindowGauge(st.r7Local, now)
@@ -1711,7 +1774,7 @@ func limitRows(st *state) []statusRow {
 	rows = append(rows, weekly)
 
 	for _, sc := range st.scoped {
-		row := statusRow{label: strings.ToUpper(sc.Model), pct: sc.Percent}
+		row := statusRow{label: strings.ToUpper(sc.Model), limit: sc.Model + " weekly bucket", pct: sc.Percent}
 		if t, ok := parseTime(sc.ResetsAt); ok {
 			row.reset, row.after = resetCells(&t, t.Sub(now).Minutes(), true)
 			row.windowBar, row.windowPct = weeklyWindowGauge(t, now)
@@ -1773,10 +1836,12 @@ func formatSwitchAdvice(st *state) string {
 	return " Binding limit is the " + st.activeBucket.Model + " bucket - move heavy work to: " + alt + "; or wait for the weekly reset."
 }
 
+// zoneAdvice is what each zone allows. Whether to launch subagents is not in it: that follows the
+// task's complexity alone, never the limits.
 var zoneAdvice = map[string]string{
-	"GREEN":  "spend to task size; subagents only when they clearly save tokens",
-	"YELLOW": "be lean: max 2 parallel subagents, no heavy fan-outs, avoid re-reads",
-	"ORANGE": "the session's first subagent is asked about and the rest run unprompted, so spawn only what you would defend; essential edits only, offer to defer XL tasks past reset",
+	"GREEN":  "spend to task size",
+	"YELLOW": "be lean: avoid re-reads and work nobody asked for",
+	"ORANGE": "essential edits only; offer to defer XL tasks past reset",
 	"RED":    "finish + checkpoint only; new tasks after reset",
 }
 
@@ -1789,7 +1854,7 @@ func run() {
 
 	var hookInput map[string]any
 	rawInput := ""
-	if mode == "inject" || mode == "gate" || mode == "statusline" {
+	if mode == "inject" || mode == "statusline" {
 		if rawInput = readStdin(); rawInput != "" {
 			_ = json.Unmarshal([]byte(rawInput), &hookInput)
 		}
@@ -1848,17 +1913,27 @@ func run() {
 			}
 			bucketOut = b
 		}
-		var minToExhaust *float64
-		if !math.IsInf(st.minToExhaust, 1) {
-			v := round(st.minToExhaust, 0)
-			minToExhaust = &v
+		// finite is a figure that may be unknown: infinite means "no answer", and encoding/json
+		// refuses non-finite floats and would drop the whole document, so it goes out as null.
+		finite := func(f float64) *float64 {
+			if math.IsInf(f, 0) || math.IsNaN(f) {
+				return nil
+			}
+			v := round(f, 0)
+			return &v
 		}
-		// Infinite means "no answer", not a number: encoding/json refuses non-finite floats and
-		// would drop the whole document, so an unknown reset distance goes out as null.
-		var minToWeeklyReset *float64
-		if !math.IsInf(st.minToReset7, 1) {
-			v := round(st.minToReset7, 0)
-			minToWeeklyReset = &v
+		// The 5-hour fields are null where the API reports no such window, and its reset ones also
+		// where the window has not started.
+		var sessionPct *float64
+		var sessionResetsAt, zoneSession *string
+		if st.hasSession {
+			v := round(st.s5, 1)
+			sessionPct = &v
+			zoneSession = &st.zone5
+			if !st.r5Local.IsZero() {
+				s := fmtYmdHM(st.r5Local)
+				sessionResetsAt = &s
+			}
 		}
 		// Same for the timestamp: an unset weekly window would otherwise print as year 1.
 		var weeklyResetsAt *string
@@ -1869,19 +1944,20 @@ func run() {
 		out := struct {
 			ActiveModel       string         `json:"active_model"`
 			ActiveModelBucket *bucketJSON    `json:"active_model_bucket"`
-			SessionPct        float64        `json:"session_pct"`
+			SessionPct        *float64       `json:"session_pct"`
 			WeeklyPct         float64        `json:"weekly_pct"`
-			SessionResetsAt   string         `json:"session_resets_at"`
+			SessionResetsAt   *string        `json:"session_resets_at"`
 			WeeklyResetsAt    *string        `json:"weekly_resets_at"`
+			BurnWindow        string         `json:"burn_window"`
 			BurnPerMin        float64        `json:"burn_pct_per_min"`
 			BurnSource        string         `json:"burn_source"`
 			PaceRatio         float64        `json:"pace_ratio"`
 			MinToExhaust      *float64       `json:"min_to_exhaust"`
-			MinToSessionReset float64        `json:"min_to_session_reset"`
+			MinToSessionReset *float64       `json:"min_to_session_reset"`
 			MinToWeeklyReset  *float64       `json:"min_to_weekly_reset"`
-			HorizonMin        float64        `json:"horizon_min"`
+			HorizonMin        *float64       `json:"horizon_min"`
 			Zone              string         `json:"zone"`
-			ZoneSession       string         `json:"zone_session"`
+			ZoneSession       *string        `json:"zone_session"`
 			ZoneWeekly        string         `json:"zone_weekly"`
 			ZoneModelBucket   string         `json:"zone_model_bucket"`
 			Limiter           string         `json:"limiter"`
@@ -1891,19 +1967,20 @@ func run() {
 		}{
 			ActiveModel:       st.activeModel,
 			ActiveModelBucket: bucketOut,
-			SessionPct:        round(st.s5, 1),
+			SessionPct:        sessionPct,
 			WeeklyPct:         round(st.s7, 1),
-			SessionResetsAt:   fmtYmdHM(st.r5Local),
+			SessionResetsAt:   sessionResetsAt,
 			WeeklyResetsAt:    weeklyResetsAt,
-			BurnPerMin:        round(st.burn, 3),
+			BurnWindow:        st.burnWindow,
+			BurnPerMin:        round(st.burn, 4),
 			BurnSource:        st.burnSource,
 			PaceRatio:         round(st.paceRatio, 2),
-			MinToExhaust:      minToExhaust,
-			MinToSessionReset: round(st.minToReset5, 0),
-			MinToWeeklyReset:  minToWeeklyReset,
-			HorizonMin:        round(st.horizonMin, 0),
+			MinToExhaust:      finite(st.minToExhaust),
+			MinToSessionReset: finite(st.minToReset5),
+			MinToWeeklyReset:  finite(st.minToReset7),
+			HorizonMin:        finite(st.horizonMin),
 			Zone:              st.zone,
-			ZoneSession:       st.zone5,
+			ZoneSession:       zoneSession,
 			ZoneWeekly:        st.zone7,
 			ZoneModelBucket:   st.zoneBucket,
 			Limiter:           st.limiter,
@@ -1942,108 +2019,12 @@ func run() {
 	case "statusline":
 		fmt.Print(renderStatusline(args, rawInput, hookInput, time.Now()))
 
-	case "gate":
-		if !gateEnabled {
-			return
-		}
-		judgeModel := activeModel
-		if hookInput != nil {
-			if ti, ok := hookInput["tool_input"].(map[string]any); ok {
-				// The independent grading pass the finishing-work rule requires on every change is
-				// never gated: blocking it does not save the budget, it removes the only reviewer
-				// who is not the author. It is one agent per revision, not a fan-out.
-				if st, ok := ti["subagent_type"].(string); ok && st == "change-reviewer" {
-					return
-				}
-				if m, ok := ti["model"].(string); ok && m != "" {
-					judgeModel = cleanModelString(m)
-				}
-			}
-		}
-		st := getState(args, judgeModel, nil)
-		if st == nil {
-			return
-		}
-		if st.zone == "RED" || st.zone == "ORANGE" {
-			target := "this session"
-			if judgeModel != "" {
-				target = "model '" + judgeModel + "'"
-			}
-			detail := "5h " + num(st.s5, 0) + "%, 7d " + num(st.s7, 0) + "%"
-			if st.bucketPct >= 0 {
-				detail += ", " + st.activeBucket.Model + " bucket " + num(st.bucketPct, 0) + "%"
-			}
-			switchTip := formatSwitchAdvice(st)
-			var reason, decision string
-			if st.zone == "RED" {
-				reason = "Usage gate: RED for " + target + " (" + detail + "; limiter: " + st.limiter + "; session resets " + fmtHHmm(st.r5Local) + "). Subagent spawn blocked - work inline and compactly, defer heavy work past reset." + switchTip
-				decision = "deny"
-			} else {
-				// Asked once per session, not once per spawn. The first fan-out in ORANGE is worth
-				// stopping for; the fifth is nagging, and a gate that nags is a gate people switch
-				// off to get work done, which protects nothing at all. RED still stops every spawn,
-				// because RED is a wall rather than a warning.
-				sid, _ := hookInput["session_id"].(string)
-				if sid != "" && gateAlreadyAsked(sid) {
-					return
-				}
-				if sid != "" {
-					markGateAsked(sid)
-				}
-				reason = "Usage gate: ORANGE for " + target + " (" + detail + "; limiter: " + st.limiter + "). Confirm this spawn is worth the budget - asked once per session, not again. Session resets " + fmtHHmm(st.r5Local) + "." + switchTip
-				decision = "ask"
-			}
-			out := map[string]any{
-				"hookSpecificOutput": map[string]any{
-					"hookEventName":            "PreToolUse",
-					"permissionDecision":       decision,
-					"permissionDecisionReason": reason,
-				},
-			}
-			b, _ := json.Marshal(out)
-			fmt.Print(string(b))
-		}
-	}
-}
-
-// Which sessions have already been asked in ORANGE, so the gate stops at one confirmation instead
-// of one per spawn. Keyed by session id and pruned to a day, so the file cannot grow forever.
-// Every failure path degrades to asking again rather than to silence: a lost marker costs one
-// prompt, a wrongly remembered one costs the confirmation the zone exists for.
-func gateAlreadyAsked(sessionID string) bool {
-	b, err := os.ReadFile(gateAsksPath)
-	if err != nil {
-		return false
-	}
-	var seen map[string]int64
-	if json.Unmarshal(b, &seen) != nil {
-		return false
-	}
-	_, ok := seen[sessionID]
-	return ok
-}
-
-func markGateAsked(sessionID string) {
-	seen := map[string]int64{}
-	if b, err := os.ReadFile(gateAsksPath); err == nil {
-		_ = json.Unmarshal(b, &seen)
-	}
-	cutoff := time.Now().Add(-24 * time.Hour).Unix()
-	for id, at := range seen {
-		if at < cutoff {
-			delete(seen, id)
-		}
-	}
-	seen[sessionID] = time.Now().Unix()
-	if b, err := json.Marshal(seen); err == nil {
-		_ = os.WriteFile(gateAsksPath, b, 0o600)
 	}
 }
 
 func loadConfig() {
 	claudeDir = configDir()
 	cachePath = filepath.Join(claudeDir, "usage-limits-cache.json")
-	gateAsksPath = filepath.Join(claudeDir, "usage-limits-gate-asks.json")
 	tokenCachePath = filepath.Join(claudeDir, "usage-limits-tokens.json")
 	credPath = filepath.Join(claudeDir, ".credentials.json")
 
@@ -2078,7 +2059,7 @@ func loadConfig() {
 	}
 	// Every setting is decoded on its own. Decoding the file as one struct meant a single value of
 	// the wrong type — a weight written "20" rather than 20 is the easy slip — silently reverted the
-	// zone thresholds, the fetch interval and the gate as well, and the only thing said about it was
+	// zone thresholds and the fetch interval as well, and the only thing said about it was
 	// that the file was not valid JSON, which it was.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(stripBOM(b), &fields); err != nil {
@@ -2092,8 +2073,8 @@ func loadConfig() {
 			return false
 		}
 		// A JSON null decodes into every Go type without complaint and leaves the zero value behind,
-		// so taking it as an answer silently turned the gate off, set the cache lifetime to nothing —
-		// which made the hook call the API on every prompt — and dropped the named zone. It is a
+		// so taking it as an answer silently set the cache lifetime to nothing — which made the hook
+		// call the API on every prompt — and dropped the named zone. It is a
 		// setting written and not filled in, so the default stands and the file is told about it.
 		if string(bytes.TrimSpace(raw)) == "null" {
 			configProblems = append(configProblems, "config: "+strconv.Quote(name)+
@@ -2140,10 +2121,6 @@ func loadConfig() {
 				strconv.Itoa(ttl)+" was ignored")
 		}
 	}
-	var gate bool
-	if field("gate_enabled", &gate) {
-		gateEnabled = gate
-	}
 	var tz string
 	if field("time_zone", &tz) {
 		timeZoneName = strings.TrimSpace(tz)
@@ -2175,8 +2152,14 @@ func loadConfig() {
 		}
 		applyWorkingWeek(days)
 	}
-	// The key this one replaced. Left unread it would silently take a weekend weighting away from a
-	// config that still carries it, which is exactly the kind of silence this file reports on.
+	// Keys that are no longer read. Left unmentioned, a config that still carries one would look as
+	// if it did something, which is exactly the kind of silence this file reports on.
+	if _, ok := fields["gate_enabled"]; ok {
+		configProblems = append(configProblems,
+			"config: \"gate_enabled\" is no longer read; the hook no longer gates subagent spawns, "+
+				"so the setting can be removed")
+	}
+	// The key working_week replaced: unread, it would silently take a weekend weighting away.
 	if _, ok := fields["week_day_weights"]; ok {
 		configProblems = append(configProblems,
 			"config: \"week_day_weights\" is no longer read; it is now \"working_week\", "+
@@ -2221,8 +2204,8 @@ func loadConfig() {
 				}
 				if math.IsNaN(v) || v < 0 || v > 100 {
 					// A threshold is a percentage of a budget. One outside the scale is not a strict
-					// setting, it is a typo: below zero pins the zone on permanently and denies every
-					// spawn from then on, above a hundred can never be reached at all.
+					// setting, it is a typo: below zero pins the zone on permanently, above a hundred
+					// can never be reached at all.
 					configProblems = append(configProblems, "zones."+scope+": "+strconv.Quote(level)+" is "+
 						strconv.FormatFloat(v, 'f', -1, 64)+", which is outside 0..100, so it was ignored")
 					continue

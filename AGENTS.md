@@ -5,9 +5,9 @@
 Linux and Windows with the Go sources they were built from, nine behaviour rules, a reviewing
 subagent, a skill about writing prompts, and the `settings.json` that wires it together.
 
-- `usage-limits` — shows live Anthropic subscription usage (5-hour window, 7-day window, per-model
-  weekly buckets) in the model's context and the status line, and gates subagent spawns near a limit.
-  Its weekly gauge measures **working time**, not calendar time.
+- `usage-limits` — shows live Anthropic subscription usage (the 5-hour window where the plan has one,
+  the 7-day window, per-model weekly buckets) in the model's context and the status line. Its weekly
+  gauge measures **working time**, not calendar time.
 - `work-audit` — writes an append-only record of each session (prompts, choices, per-turn stats,
   files changed, final answer) under `management/logs/`.
 - `play-sound` — plays a sound when Claude Code stops or needs attention.
@@ -28,18 +28,18 @@ subagent, a skill about writing prompts, and the `settings.json` that wires it t
 at files that are not there, and nothing announces it. Copy them together, or drop one deliberately
 knowing what refers to it. Only `web-search-when-in-doubt.md` refers to nothing else.
 
-**Across the groups there are four ties, and they are the only ones.** `session-budget.md` is the
+**Across the groups there are three ties, and they are the only ones.** `session-budget.md` is the
 other half of the limits hook — the hook supplies numbers, the rule is what tells the model to act on
 them, so **install it too, or the numbers are decoration.** `finishing-work.md` launches
 `change-reviewer` by name, so install that subagent whenever you install that rule, or its grading
-stage silently cannot run. The limits gate exempts `change-reviewer` by name. And `finishing-work.md`
+stage silently cannot run. And `finishing-work.md`
 expects the audit log `work-audit` writes to be staged with the work wherever the project tracks it.
 Otherwise the hooks, the rules and the skill are independent — take what is wanted.
 
 **There is no runtime to install.** No Node, no Python, no Go. The binaries are committed on purpose.
 
 `REFERENCE.md` is the full description of every component — what every line of the display means,
-how the working week is computed, what the gate does, every config key, what each rule, the subagent
+how the working week is computed, every config key, what each rule, the subagent
 and the skill are for. Read it if you need to explain any of this or change its behaviour;
 `README.md` is the short overview. **This file is only about installing it into another project.**
 
@@ -88,7 +88,10 @@ subset is a decision to state, not a saving to take quietly.
 **do not overwrite `.claude/usage-limits-config.json`** — it holds that project's own thresholds.
 Merge instead: add any key it lacks, change no key it already has. If it still carries the old
 `week_day_weights` key, replace it with `working_week`, carrying each day's number into that day's
-`percent` and taking the default hours (`"from": "12:00"`, `"to": "20:00"`).
+`percent` and taking the default hours (`"from": "12:00"`, `"to": "20:00"`). If it still carries
+`gate_enabled`, delete it: the hook no longer gates subagent spawns and names the key on a `CONFIG`
+line until it is gone. For the same reason, delete from its `settings.json` the `PreToolUse` entry
+whose command runs `usage-limits --mode gate` — that mode now does nothing.
 
 **If the target keeps its binaries somewhere else** — `scripts/claude-code/` or `.claude/bin/` — put
 them there instead and leave its layout alone. The launcher searches all three.
@@ -145,18 +148,6 @@ the larger value.
             "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/work-audit\"",
             "async": true,
             "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Agent|Task|Workflow",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/usage-limits\" --mode gate",
-            "timeout": 20
           }
         ]
       }

@@ -44,18 +44,6 @@
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "Agent|Task|Workflow",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/usage-limits\" --mode gate",
-            "timeout": 20
-          }
-        ]
-      }
-    ],
     "Notification": [
       {
         "matcher": "",

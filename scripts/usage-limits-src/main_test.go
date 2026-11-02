@@ -608,7 +608,8 @@ func TestLimitRowsCaption(t *testing.T) {
 	now := time.Now()
 	reset7 := now.Add(72 * time.Hour)
 	st := &state{
-		s5: 20, s7: 30,
+		hasSession: true,
+		s5:         20, s7: 30,
 		r5Local: now.Add(2 * time.Hour), r7Local: reset7,
 		minToReset5: 120, minToReset7: 72 * 60,
 		scoped: []scopedBucket{{Model: "Fable", Percent: 5, ResetsAt: reset7.Format(time.RFC3339)}},
@@ -654,7 +655,6 @@ func withConfigFile(t *testing.T, body string, fn func()) {
 	}
 	prev := struct {
 		ttl      int
-		gate     bool
 		ctx      float64
 		zone     string
 		loc      *time.Location
@@ -663,10 +663,10 @@ func withConfigFile(t *testing.T, body string, fn func()) {
 		problems []string
 		z5, z7   map[string]float64
 		ahead    float64
-	}{fetchTTLSec, gateEnabled, contextWindowTokens, timeZoneName, weekLoc, workingWeek, searchStepMin,
+	}{fetchTTLSec, contextWindowTokens, timeZoneName, weekLoc, workingWeek, searchStepMin,
 		configProblems, copyThresholds(z5), copyThresholds(z7), limitAheadRed}
 	defer func() {
-		fetchTTLSec, gateEnabled, contextWindowTokens = prev.ttl, prev.gate, prev.ctx
+		fetchTTLSec, contextWindowTokens = prev.ttl, prev.ctx
 		timeZoneName, weekLoc = prev.zone, prev.loc
 		workingWeek, searchStepMin, configProblems = prev.week, prev.step, prev.problems
 		z5, z7, limitAheadRed = prev.z5, prev.z7, prev.ahead
@@ -698,7 +698,6 @@ func problemsMentioning(sub string) bool {
 func TestLoadConfigAppliesEverySetting(t *testing.T) {
 	withConfigFile(t, `{
       "fetch_ttl_sec": 5,
-      "gate_enabled": false,
       "context_window_tokens": 200000,
       "limit_ahead_red_pct": 35,
       "time_zone": "Asia/Tokyo",
@@ -706,8 +705,8 @@ func TestLoadConfigAppliesEverySetting(t *testing.T) {
       "zones": { "session": { "YELLOW": 11, "ORANGE": 12, "RED": 13 },
                  "weekly":  { "YELLOW": 21, "ORANGE": 22, "RED": 23 } }
     }`, func() {
-		if fetchTTLSec != 5 || gateEnabled || contextWindowTokens != 200000 || limitAheadRed != 35 {
-			t.Errorf("ttl %v, gate %v, context %v, red lead %v", fetchTTLSec, gateEnabled, contextWindowTokens, limitAheadRed)
+		if fetchTTLSec != 5 || contextWindowTokens != 200000 || limitAheadRed != 35 {
+			t.Errorf("ttl %v, context %v, red lead %v", fetchTTLSec, contextWindowTokens, limitAheadRed)
 		}
 		if timeZoneName != "Asia/Tokyo" || weekLocation().String() != "Asia/Tokyo" {
 			t.Errorf("zone %q resolved to %v", timeZoneName, weekLocation())
@@ -725,16 +724,15 @@ func TestLoadConfigAppliesEverySetting(t *testing.T) {
 }
 
 // A JSON null must leave the setting alone and say so, never apply the zero it decodes to. Setting
-// the cache lifetime to zero this way made the hook call the API on every prompt, and setting the
-// gate to false turned off the only thing that refuses a spawn in a hot zone.
+// the cache lifetime to zero this way made the hook call the API on every prompt.
 func TestLoadConfigRefusesNulls(t *testing.T) {
 	withConfigFile(t, `{
-      "fetch_ttl_sec": null, "gate_enabled": null, "context_window_tokens": null,
+      "fetch_ttl_sec": null, "context_window_tokens": null,
       "limit_ahead_red_pct": null, "time_zone": null, "working_week": null, "zones": null
     }`, func() {
-		if fetchTTLSec != 60 || !gateEnabled || contextWindowTokens != 1_000_000.0 || limitAheadRed != 20 {
-			t.Errorf("a null overwrote a default: ttl %v, gate %v, context %v, red lead %v",
-				fetchTTLSec, gateEnabled, contextWindowTokens, limitAheadRed)
+		if fetchTTLSec != 60 || contextWindowTokens != 1_000_000.0 || limitAheadRed != 20 {
+			t.Errorf("a null overwrote a default: ttl %v, context %v, red lead %v",
+				fetchTTLSec, contextWindowTokens, limitAheadRed)
 		}
 		if timeZoneName != defaultTimeZone {
 			t.Errorf("a null zone left %q", timeZoneName)
@@ -742,7 +740,7 @@ func TestLoadConfigRefusesNulls(t *testing.T) {
 		if workingWeek != shippedDefaultWeek() {
 			t.Errorf("a null week left %+v", workingWeek)
 		}
-		for _, name := range []string{"fetch_ttl_sec", "gate_enabled", "context_window_tokens", "limit_ahead_red_pct",
+		for _, name := range []string{"fetch_ttl_sec", "context_window_tokens", "limit_ahead_red_pct",
 			"time_zone", "working_week", "zones"} {
 			if !problemsMentioning(name) {
 				t.Errorf("%s was nulled without a word: %v", name, configProblems)
@@ -762,7 +760,6 @@ func shippedDefaultWeek() [7]workingDay {
 func TestLoadConfigIsolatesOneBadSetting(t *testing.T) {
 	bad := map[string]string{
 		"fetch_ttl_sec":         `"often"`,
-		"gate_enabled":          `"yes"`,
 		"context_window_tokens": `"lots"`,
 		"limit_ahead_red_pct":   `"20"`,
 		"time_zone":             `12`,
@@ -770,12 +767,12 @@ func TestLoadConfigIsolatesOneBadSetting(t *testing.T) {
 		"zones":                 `"strict"`,
 	}
 	for field, value := range bad {
-		body := `{"fetch_ttl_sec": 5, "gate_enabled": false, "context_window_tokens": 200000,
+		body := `{"fetch_ttl_sec": 5, "context_window_tokens": 200000,
                   "limit_ahead_red_pct": 35, "time_zone": "Asia/Tokyo",
                   "working_week": {"mon": {"percent": 40}},
                   "zones": {"session": {"YELLOW": 11}}}`
 		body = strings.Replace(body, `"`+field+`": `+map[string]string{
-			"fetch_ttl_sec": "5", "gate_enabled": "false", "context_window_tokens": "200000",
+			"fetch_ttl_sec": "5", "context_window_tokens": "200000",
 			"limit_ahead_red_pct": "35", "time_zone": `"Asia/Tokyo"`, "working_week": `{"mon": {"percent": 40}}`,
 			"zones": `{"session": {"YELLOW": 11}}`,
 		}[field], `"`+field+`": `+value, 1)
@@ -786,9 +783,6 @@ func TestLoadConfigIsolatesOneBadSetting(t *testing.T) {
 			// Every other setting still applied.
 			if field != "fetch_ttl_sec" && fetchTTLSec != 5 {
 				t.Errorf("%s took fetch_ttl_sec with it (%v)", field, fetchTTLSec)
-			}
-			if field != "gate_enabled" && gateEnabled {
-				t.Errorf("%s took gate_enabled with it", field)
 			}
 			if field != "context_window_tokens" && contextWindowTokens != 200000 {
 				t.Errorf("%s took context_window_tokens with it (%v)", field, contextWindowTokens)
@@ -832,12 +826,21 @@ func TestLoadConfigIsolatesOneBadThreshold(t *testing.T) {
 
 // A file that really is malformed still says so, and nothing it held is applied.
 func TestLoadConfigReportsMalformedFile(t *testing.T) {
-	withConfigFile(t, `{"gate_enabled": false,`, func() {
-		if !gateEnabled {
+	withConfigFile(t, `{"fetch_ttl_sec": 5,`, func() {
+		if fetchTTLSec != 60 {
 			t.Error("a malformed file was partly applied")
 		}
 		if !problemsMentioning("not valid JSON") {
 			t.Errorf("a malformed file passed without a word: %v", configProblems)
+		}
+	})
+}
+
+// The gate is gone, and a config that still switches it is told the setting does nothing now.
+func TestLoadConfigNamesTheRetiredGate(t *testing.T) {
+	withConfigFile(t, `{"gate_enabled": false}`, func() {
+		if !problemsMentioning("gate_enabled") {
+			t.Errorf("a retired setting passed without a word: %v", configProblems)
 		}
 	})
 }
@@ -916,8 +919,7 @@ func TestLoadConfigNamesUnknownDayFields(t *testing.T) {
 	})
 }
 
-// A threshold outside 0..100 is a typo, not a strict setting: below zero pins the zone on for good
-// and denies every spawn from then on.
+// A threshold outside 0..100 is a typo, not a strict setting: below zero pins the zone on for good.
 func TestLoadConfigRefusesThresholdsOutsideTheScale(t *testing.T) {
 	withConfigFile(t, `{"zones": {"session": {"YELLOW": 5000, "ORANGE": -20, "RED": 91}}}`, func() {
 		if z5["YELLOW"] != 50 || z5["ORANGE"] != 80 {

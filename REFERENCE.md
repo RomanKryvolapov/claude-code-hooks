@@ -1,7 +1,7 @@
 # Reference
 
 Everything in this repository, in full: every element of the status line and of the model's block,
-how working time is counted, what the gate does, every configuration key and what the hook checks in
+how working time is counted, what the zones mean, every configuration key and what the hook checks in
 it, what the session log records, what each rule, the reviewer and the prompt guide are for, which
 hook runs on which event, and how the binaries are built. For what this is and how to use it, start
 with [README.md](README.md); to install it into another project, follow [AGENTS.md](AGENTS.md).
@@ -21,7 +21,7 @@ another by name, so they are installed as a set rather than picked one at a time
 
 | Component                                                                       | Where it lives                             | What it is                                                                                                                         |
 | ------------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| [`usage-limits`](#usage-limits--your-subscription-budget-in-front-of-the-model)  | `.claude/hooks/`, `scripts/usage-limits-*` | Live Anthropic subscription usage in the model's context and the status line, plus a gate that refuses subagent spawns near a limit |
+| [`usage-limits`](#usage-limits--your-subscription-budget-in-front-of-the-model)  | `.claude/hooks/`, `scripts/usage-limits-*` | Live Anthropic subscription usage in the model's context and the status line                                                       |
 | [`work-audit`](#work-audit--an-append-only-record-of-the-session)                | `.claude/hooks/`, `scripts/work-audit-*`   | An append-only log of what actually happened in each session, written mechanically rather than summarised by the model              |
 | [`play-sound`](#play-sound--a-sound-when-it-wants-you-back)                      | `.claude/hooks/`, `scripts/play-sound-*`   | A sound when Claude Code stops, fails, or is waiting on you                                                                        |
 | [The nine rules](#the-rules)                                                     | `.claude/rules/`                           | How the model works: budget, starting, finishing, autonomy, architecture, code quality, merges, answers, searching                  |
@@ -63,15 +63,13 @@ written as two halves of one idea. Install one alone and the model is handed ins
 files that are not there, which nothing announces. Only `web-search-when-in-doubt` refers to nothing
 else. The subagent belongs to that set too: it judges a change against the rules the project wrote down.
 
-Across the groups there are four ties, and they are the only ones:
+Across the groups there are three ties, and they are the only ones:
 
 1. **`session-budget` is the other half of `usage-limits`.** The hook supplies numbers; the rule is
    what makes the model act on them. Copied without it, the numbers are decoration.
 2. **`finishing-work` launches `change-reviewer` by name.** Install that rule without the subagent
    file and its grading stage silently cannot run.
-3. **The gate exempts `change-reviewer` by name**, so the one pass a revision depends on is never the
-   spawn refused in a hot zone.
-4. **`finishing-work` expects the audit log to be committed with the work** where the project tracks
+3. **`finishing-work` expects the audit log to be committed with the work** where the project tracks
    it — that log is what `work-audit` writes, and the rule says to check it was staged.
 
 Beyond those, the hooks do not need the rules, the rules do not need the hooks, and the skill needs
@@ -93,14 +91,20 @@ is why [AGENTS.md](AGENTS.md) carries a step that checks the install took.
 
 ## `usage-limits` — your subscription budget in front of the model
 
-A Claude subscription has three kinds of limit running at once: a **5-hour session window**, a
-**7-day window**, and a **per-model weekly bucket** for some models. They are account-global — every
+A Claude subscription has up to three kinds of limit running at once: a **5-hour session window**,
+a **7-day window**, and a **per-model weekly bucket** for some models. Not every plan has all three:
+since 30 October 2026 a verified Ultra account (the former Max 20x) has no 5-hour window at all, only
+the weekly limit and Fable's own weekly bucket. The usage endpoint then reports `five_hour` as null and
+lists only weekly limits, and the hook draws exactly that — no 5-hour row, no 5-hour figure for the
+model, no 5-hour zone. A plan that does have the window gets it everywhere, as below. They are account-global — every
 Claude session you have open shares them. Claude Code shows them to you in `/usage` and passes the
 5-hour and 7-day windows, though not the per-model bucket, to a status line script; the model, which
 decides how much work to take on, sees none of it. So you either stop early to be safe, or you run
 into a wall in the middle of something.
 
-This hook reads the real numbers from Anthropic's own usage endpoint and draws them as gauges in
+This hook reads the real numbers from Anthropic's own usage endpoint — which, since about November
+2026, answers only a client introducing itself as Claude Code and refuses every other one with a
+`429` — and draws them as gauges in
 three places: in the status line, for you; in the model's context, on every prompt, so the model
 can size its own work; and as JSON for scripting.
 
@@ -120,7 +124,7 @@ per line, every figure in the one format the root states, and no instructions �
 figures is the `session-budget` rule's. It carries no gauge, which would tell the model nothing the
 number does not and would cost its context tokens on every prompt. After the figures come the token
 counts and the two elements it acts on — how fast the budget is burning, and the zone that decides
-whether it may spawn subagents:
+how much work it may take on:
 
 ```xml
 <usage_limits scope="account-global: every session on this subscription" format="tokens in k/m/b; clock times local; waits h:mm">
@@ -129,8 +133,8 @@ whether it may spawn subagents:
 <limit name="7-day" used="16%" gone="5% of the working week" resets="MON 18:00, in 6 days 19:41"/>
 <limit name="Fable weekly bucket" used="0%" gone="5% of the working week" resets="MON 18:00, in 6 days 19:41"/>
 <tokens session="fresh 2m, cached 164m" account_5h="fresh 19m, cached 1.1b" account_7d="fresh 20m, cached 1.1b"/>
-<burn rate="0.16%/min, sampled" forecast="lasts to the reset at 23:50" pace="0.8"/>
-<zone level="YELLOW" limiter="session">be lean: max 2 parallel subagents, no heavy fan-outs, avoid re-reads.</zone>
+<burn window="5-hour" rate="0.16%/min, sampled" forecast="lasts to the reset at 23:50" pace="0.8"/>
+<zone level="YELLOW" limiter="session">be lean: avoid re-reads and work nobody asked for.</zone>
 </usage_limits>
 ```
 
@@ -159,20 +163,25 @@ against `context_window_tokens` from the config.
 The elements after the figures are the model's, and appear in its block only:
 
 **`<tokens>`** is the same count the status line shows — this session, and the account on this
-machine in the 5-hour and weekly windows — so the model can see what its own work weighs against
+machine in the 5-hour window (where there is one; `account_5h` is absent otherwise) and the weekly
+one — so the model can see what its own work weighs against
 everything else running on the account.
 
-**`<burn>`** is how fast the session window is filling: `%/min`, measured from samples when there
-are enough of them and estimated from the elapsed pace otherwise, then a forecast — either `lasts to
+**`<burn>`** is how fast the shortest running window is filling — the 5-hour one where it runs, the
+7-day one otherwise, and `window` says which: `%/min`, on the 5-hour window measured from samples
+when there are enough of them and estimated from the elapsed pace otherwise; on the 7-day window
+always the pace, since the endpoint reports whole percents and one step between two samples minutes
+apart would read as a week emptied in hours. Then a forecast — either `lasts to
 the reset at <time>` or `reaches the cap in <wait>` — and `pace`, the spend divided by the share of
 the window gone. Above 1.0 the spend is ahead of the clock.
 
 **`<zone>`** is the part that changes behaviour: GREEN, YELLOW, ORANGE or RED, whichever is worst
-across the session window, the weekly window and the active model's own bucket, plus which of the
-three is binding. Knowing the binding limiter is what tells you whether switching model helps.
+across the session window (where there is one), the weekly window and the active model's own bucket,
+plus which of them is binding. Knowing the binding limiter is what tells you whether switching model helps.
 
 **`<model>`** (session start only) names the model in use and whether it has a weekly bucket of its
-own, with that bucket's burn and forecast.
+own, with that bucket's burn — its own pace over its week, for the same whole-percent reason as the
+7-day window — and forecast.
 
 **`<stale>`** appears only when the figures are stale: the usage endpoint has not answered for
 longer than two fetch periods — it rate-limits, and a login can lapse. It says since when, so the
@@ -203,8 +212,8 @@ need:
     long session makes. The time is green with the cache's whole lifetime ahead (an hour, or five
     minutes) and turns red as it runs out; it reads `CACHE COLD`, in red, once that has happened.
   - `SESSION` is this session and its subagents; `ACCOUNT` is every session on this machine, in the
-    limits' own windows — `5H` since the 5-hour window opened, `7D` since the weekly one did — so it
-    reads against the gauges below it. A session on another computer, or on claude.ai, is in the
+    limits' own windows — `5H` since the 5-hour window opened (left out where there is none), `7D`
+    since the weekly one did — so it reads against the gauges below it. A session on another computer, or on claude.ai, is in the
     limits but not in these figures.
   - `FRESH` is new input, output and cache writes; `CACHED` is what was read back from the prompt
     cache. Every request sends the whole conversation again, and what the cache already holds is
@@ -222,13 +231,18 @@ need:
 - **Claude Code's own figures when the endpoint is silent.** Once it has not answered for two fetch
   periods, the 5-hour and 7-day rows quietly show the figures Claude Code hands the status line. The
   per-model buckets, which only the endpoint knows, stay as of its last answer. These stand-ins are
-  never written to the cache the gate and the injected block read.
+  never written to the cache the injected block and the JSON read.
 
 The status line is redrawn every 30 seconds (`refreshInterval` in `settings.json`), so the
 countdowns move while the session is idle. That has a cost: an open session now asks the usage
 endpoint once per `fetch_ttl_sec` (a minute by default) even while idle, where before an idle session
 asked nothing. Several open sessions share one cache, and the endpoint is asked at most once per
-`fetch_ttl_sec` whether it answers or not, so a rate-limited endpoint is not hammered. Raise
+`fetch_ttl_sec` whether it answers or not, so a rate-limited endpoint is not hammered. The endpoint
+rate-limits even a client that introduces itself correctly, and its `429` carries a `Retry-After`;
+the hook then asks nothing until that time has passed (an hour at most), showing the last figures it
+has, marked stale. The pause is kept in the usage cache, which every project on the machine shares,
+and a copy of the hook older than this one rewrites that cache without it — so the pause holds only
+once every project that carries the hook has this version. Raise
 `fetch_ttl_sec` to ask less often.
 
 ### The working week — why the weekly bar is not calendar time
@@ -271,7 +285,7 @@ The **5-hour row is never weighted** — it is five hours of one day, and weight
 nothing.
 
 **This is a display scale and nothing more.** Every reset time, the `RESET AFTER` countdown, the
-burn rate, the forecast, the zones and the gate all stay on real clock time, because real time is
+burn rate, the forecast and the zones all stay on real clock time, because real time is
 what actually resets.
 
 #### Where a day begins
@@ -289,21 +303,22 @@ or 25 hours counts as the day it really was, an hour repeated when a clock goes 
 the day it repeats on, and zones that move their clock at exactly midnight (Chile, Cuba — where a
 local day has no `00:00` at all) are correct too.
 
-### The gate
+### The zones
 
-Beyond showing numbers, the hook is wired to `PreToolUse` for `Agent`, `Task` and `Workflow`, and
-can refuse a spawn. With the built-in thresholds:
+The zone is the worst of the limits the plan has. With the built-in thresholds:
 
-| Zone   | Session (5h) | Weekly & buckets (7d) | What the gate does                                  |
-| ------ | ------------ | --------------------- | --------------------------------------------------- |
-| GREEN  | <50%         | <80%                  | nothing                                             |
-| YELLOW | 50–80%       | 80–90%                | nothing                                             |
-| ORANGE | 80–90%       | 90–95%                | asks about the **first** spawn of the session, once |
-| RED    | ≥90%         | ≥95%                  | denies the spawn                                    |
+| Zone   | Session (5h), where the plan has it | Weekly & buckets (7d) |
+| ------ | ----------------------------------- | --------------------- |
+| GREEN  | <50%                                | <80%                  |
+| YELLOW | 50–80%                              | 80–90%                |
+| ORANGE | 80–90%                              | 90–95%                |
+| RED    | ≥90%                                | ≥95%                  |
 
-It asks **once per session**, not per spawn: a gate that interrupts every time is a gate people
-switch off. `change-reviewer` is exempt by name in every zone. The thresholds are configurable; set
-`gate_enabled` to `false` to turn the gate off and keep the display.
+What each zone allows is the `session-budget` rule's, and it is about how much work to take on. The
+hook does not gate subagent spawns, and the rule does not tie them to the zone: whether to launch one
+follows the task's complexity alone. An earlier version refused spawns in RED and asked about them in
+ORANGE; a config that still carries its `gate_enabled` key is told the key is no longer read, and a
+`settings.json` that still runs `--mode gate` gets silence.
 
 ### Configuration
 
@@ -314,7 +329,6 @@ switch off. `change-reviewer` is exempt by name in every zone. The thresholds ar
 | `working_week`          | noon–8, wknd 20 | Per weekday: `percent`, `from`, `to` — see above             |
 | `time_zone`             | `Europe/Sofia`  | The zone the working week is measured in                     |
 | `zones`                 | see the table   | `session` and `weekly` thresholds for YELLOW / ORANGE / RED  |
-| `gate_enabled`          | `true`          | Whether the gate refuses spawns at all                       |
 | `fetch_ttl_sec`         | `60`            | How often the usage endpoint is asked, answered or not       |
 | `context_window_tokens` | `1000000`       | The CONTEXT window where Claude Code does not report it      |
 | `limit_ahead_red_pct`   | `20`            | Points ahead of its time gauge at which LIMIT is fully red   |
@@ -326,9 +340,9 @@ Days are keyed by their English name or three-letter abbreviation, in any case.
 is not `percent`, `from` or `to`, an unreadable time, a range that runs backwards, a percentage
 outside 0–100, a threshold outside 0–100 or under a name that is not a zone, a cache lifetime below
 zero, a context window at or below zero, a `limit_ahead_red_pct` at or below zero or above 100, a
-setting written as `null`, an unloadable time zone, the superseded `week_day_weights` key, and a
-file that is not valid JSON. One bad value costs that value alone — never the rest of the file. The
-line is absent on a correct config, and it is printed even when the usage API cannot be reached,
+setting written as `null`, an unloadable time zone, the superseded `week_day_weights` key, the
+retired `gate_enabled` key, and a file that is not valid JSON. One bad value costs that value
+alone — never the rest of the file. The line is absent on a correct config, and it is printed even when the usage API cannot be reached,
 which is exactly when somebody is most likely to be editing the file.
 
 An unknown key at the top level is the one thing passed over without comment: a config may carry
@@ -343,13 +357,14 @@ it.
 | ---------------------------------------- | ------------------------------------------- |
 | `--mode inject --event SessionStart`     | the block injected at session start         |
 | `--mode inject --event UserPromptSubmit` | the block injected on every prompt          |
-| `--mode gate`                            | the PreToolUse gate for Agent/Task/Workflow |
 | `--mode json [--model <id>]`             | the full computed state, as JSON            |
 | `--mode statusline`                      | the picture, gauges painted, session tokens |
 
 `--mode json` is the one to script against. It carries `session_pct`, `weekly_pct`, `zone`,
-`limiter`, `burn_pct_per_min`, `min_to_exhaust`, `horizon_min`, the active model's bucket, every
-weekly-scoped bucket, and `config_problems`.
+`limiter`, `burn_window`, `burn_pct_per_min`, `min_to_exhaust`, `horizon_min`, the active model's
+bucket, every weekly-scoped bucket, and `config_problems`. Where the plan has no 5-hour window,
+`session_pct`, `session_resets_at`, `min_to_session_reset` and `zone_session` are null — never a
+zero that would read as measured — and `burn_window` is `weekly`.
 
 ---
 
@@ -411,17 +426,15 @@ notification hook must never interrupt a session.
 
 ## What none of the hooks ever do
 
-- **They never break a session.** Every failure path exits 0: the injection and gate modes stay
-  silent, the status line prints `LIMITS -> N/A`, JSON prints an error document. A missing binary, a
+- **They never break a session.** Every failure path exits 0: the injection mode stays silent, the status line prints `LIMITS -> N/A`, JSON prints an error document. A missing binary, a
   broken config, an expired token, no network — all end the same way.
 - **They send nothing anywhere.** The only outbound request is `usage-limits` asking
   `api.anthropic.com`, authenticated with the OAuth token `claude login` already stored — in
   `.credentials.json` under `~/.claude` (or `CLAUDE_CONFIG_DIR`) on Linux and Windows, in the login
   Keychain on macOS, read through the system `security` tool. No API key is needed and the token is
   never printed.
-- **They write almost nothing.** `usage-limits` writes three files under `~/.claude` (or
-  `CLAUDE_CONFIG_DIR`): a usage cache, a note of whether the gate has asked this session, and how far
-  this week's transcripts have been counted. The last one holds counts and file names,
+- **They write almost nothing.** `usage-limits` writes two files under `~/.claude` (or
+  `CLAUDE_CONFIG_DIR`): a usage cache and how far this week's transcripts have been counted. The last one holds counts and file names,
   never what the transcripts say. `work-audit` writes its own log under
   `management/logs/`, plus two throwaway counters in the OS temp folder. `play-sound` writes nothing.
 
@@ -462,17 +475,19 @@ complexity rather than by what is left, pick the cheapest model and the least th
 read context by name instead of scanning, and treat a limit as a wall to stop short of rather than a
 budget to fill.
 
-Its sharpest part is about subagents. Each runs its own context window and reloads a bootstrap on
+Its sharpest part is about subagents. Whether to launch one is decided by the task's complexity
+alone — never by the zone, the limiter or what is left — and nothing refuses a spawn because a limit
+is near. Each runs its own context window and reloads a bootstrap on
 every spawn, so a fan-out costs roughly four to seven times what the same work costs inline — worth
 it only for read-heavy exploration across many files, never for editing one or two. It also says
 plainly that **reviewing a change is one agent working sequentially, not a fan-out**: the code runs
 in an order, and parallel readers lose the single mind holding the whole path from input to result.
-The `change-reviewer` pass is the one thing outside the calculation entirely — never weighed, never
-economised, never skipped because the change looked small. The single thing that can still stop it is
-the agent failing to launch at all — Claude Code no longer caps spawns per session — and then the
-revision has to say so and fall back to a cold self-pass rather than quietly skipping the grading.
+The `change-reviewer` pass is not a spending choice at all: it is part of finishing, which
+`finishing-work` runs once per task, and that rule — not this one — says what happens when the agent
+cannot be launched.
 
-Then: what each zone allows, what the binding limiter means for whether switching model would help at
+Then: what each zone allows for spending, what the binding limiter means for whether switching model
+would help at
 all, why Ultracode and the Workflow tool are the highest-risk spend available — one run can fan out
 into dozens of subagents — and when to split a long task and write a checkpoint instead of running
 into the wall.
@@ -680,9 +695,6 @@ formatting runs. It returns findings worst-first, plus what it could not check.
 **It works sequentially, and one pass, not a panel.** Depth is the whole value it adds; four skims in
 parallel would lose it.
 
-**The limits hook knows about it by name.** The gate exempts `change-reviewer` in every zone, so the
-one pass a revision depends on is never the spawn refused when the budget is tight.
-
 ---
 
 # The `dev-ai-prompt-generation` skill
@@ -720,7 +732,6 @@ Code's events onto the three hooks:
 | status line                        | `usage-limits --mode statusline`           |
 | `SessionStart`                     | `usage-limits --mode inject`, `work-audit` |
 | `UserPromptSubmit`                 | `usage-limits --mode inject`, `work-audit` |
-| `PreToolUse` (Agent/Task/Workflow) | `usage-limits --mode gate`                 |
 | `Notification`                     | `play-sound`                               |
 | `Stop`, `StopFailure`              | `play-sound`, `work-audit`                 |
 | `SessionEnd`, `PreCompact`         | `work-audit`                               |

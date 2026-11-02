@@ -6,7 +6,7 @@
 // in main.go says out loud when it cannot use something it was given.
 //
 // **Not everything numeric lives here.** The HTTP timeout, how much of a transcript is read, how
-// many samples make a burn rate trustworthy and how long the gate remembers having asked are
+// many samples make a burn rate trustworthy are
 // implementation choices rather than settings, and they stay beside the code that makes them.
 //
 // Nothing here decides how anything is computed; that is main.go's job.
@@ -90,11 +90,20 @@ var rank = map[string]int{"GREEN": 0, "YELLOW": 1, "ORANGE": 2, "RED": 3}
 var weekdays = []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 
 // --- fetching and sampling ----------------------------------------------------
+
+// usageUserAgent is the User-Agent the usage API is asked with. Since about November 2026 the
+// endpoint answers 429 with "Retry-After: 0" to every client whose User-Agent does not start with
+// "claude-code/" and a version — Go's default included — while the same token, so introduced, gets
+// 200. The version itself is not checked; the comment after it says who is really asking. Observed
+// behaviour, not documented.
+const usageUserAgent = "claude-code/2.1.316 (usage-limits hook)"
+
+// maxRetryAfter caps how long a 429's Retry-After keeps the hook from asking again.
+const maxRetryAfter = time.Hour
+
 var (
 	// How long a fetched usage document is reused before the API is asked again.
 	fetchTTLSec = 60
-	// Whether the PreToolUse gate refuses subagent spawns in a hot zone at all.
-	gateEnabled = true
 	// The context window the CONTEXT gauge measures against.
 	contextWindowTokens = 1_000_000.0
 )

@@ -46,8 +46,8 @@ var blockAttrs = []string{
 }
 
 // modelBlock is the whole block for a state the usage API — or Claude Code — gave figures for.
-// rows come as limitRows lays them out: the 5-hour window, the weekly one, then the per-model
-// buckets in the order st.scoped holds them. tokens is nil where there is no session to count.
+// rows come as limitRows lays them out: the 5-hour window where there is one, the weekly one, then
+// the per-model buckets. tokens is nil where there is no session to count.
 func modelBlock(st *state, rows []statusRow, ctx contextReading, tokens *tokenStats, sessionStart bool, now time.Time) string {
 	attrs := blockAttrs
 	if sessionStart {
@@ -61,11 +61,13 @@ func modelBlock(st *state, rows []statusRow, ctx contextReading, tokens *tokenSt
 		pct := math.Min(100, ctx.tokens/ctx.window*100)
 		lines = append(lines, element("context", "", "used", shortTokens(ctx.tokens)+" of "+shortTokens(ctx.window)+" ("+num(pct, 0)+"%)"))
 	}
-	lines = append(lines, limitElements(st, rows)...)
+	lines = append(lines, limitElements(rows)...)
 	if tokens != nil {
 		lines = append(lines, tokensElement(*tokens))
 	}
-	lines = append(lines, burnElement(st))
+	if st.burnWindow != "" {
+		lines = append(lines, burnElement(st))
+	}
 	for _, p := range configProblems {
 		lines = append(lines, element("config_problem", p))
 	}
@@ -93,17 +95,10 @@ func unavailableBlock() string {
 
 // limitElements is one element per limit: how much is used against how much of its window is gone,
 // and when it resets.
-func limitElements(st *state, rows []statusRow) []string {
+func limitElements(rows []statusRow) []string {
 	out := make([]string, 0, len(rows))
-	for i, r := range rows {
-		name := "5-hour"
-		switch {
-		case i == 1:
-			name = "7-day"
-		case i >= 2 && i-2 < len(st.scoped):
-			name = st.scoped[i-2].Model + " weekly bucket"
-		}
-		attrs := []string{"name", name, "used", num(r.pct, 0) + "%"}
+	for _, r := range rows {
+		attrs := []string{"name", r.limit, "used", num(r.pct, 0) + "%"}
 		if r.windowBar != "" {
 			of := "the window"
 			if r.windowCaption == captionWorking {
@@ -131,7 +126,10 @@ func tokensElement(t tokenStats) string {
 	}
 	attrs := []string{"session", counts(t.session)}
 	if t.account {
-		attrs = append(attrs, "account_5h", counts(t.fiveHour), "account_7d", counts(t.weekly))
+		if t.fiveKnown {
+			attrs = append(attrs, "account_5h", counts(t.fiveHour))
+		}
+		attrs = append(attrs, "account_7d", counts(t.weekly))
 	}
 	if !t.sessionWhole || (t.account && !t.accountWhole) {
 		attrs = append(attrs, "counting", "unfinished")
@@ -139,15 +137,21 @@ func tokensElement(t tokenStats) string {
 	return element("tokens", "", attrs...)
 }
 
-// burnElement is how fast the 5-hour window is filling, where that lands, and the pace against the
-// clock — spend divided by the share of the window gone.
+// burnElement is how fast the window burn is measured in is filling — the 5-hour one where it runs,
+// the weekly one otherwise — where that lands, and the pace against the clock: spend divided by the
+// share of the window gone.
 func burnElement(st *state) string {
-	forecast := "lasts to the reset at " + fmtHHmm(st.r5Local)
-	if !math.IsInf(st.minToExhaust, 1) && st.minToExhaust < st.minToReset5 {
+	window, reset, minToReset, digits := "5-hour", fmtHHmm(st.r5Local), st.minToReset5, 2
+	if st.burnWindow == "weekly" {
+		// A week's rate is a few hundredths of a percent a minute; two decimals would read as zero.
+		window, reset, minToReset, digits = "7-day", fmtDddHHmm(st.r7Local), st.minToReset7, 4
+	}
+	forecast := "lasts to the reset at " + reset
+	if !math.IsInf(st.minToExhaust, 1) && st.minToExhaust < minToReset {
 		forecast = "reaches the cap in " + formatWait(st.minToExhaust)
 	}
-	return element("burn", "", "rate", num(st.burn, 2)+"%/min, "+st.burnSource, "forecast", forecast,
-		"pace", num(st.paceRatio, 1))
+	return element("burn", "", "window", window, "rate", num(st.burn, digits)+"%/min, "+st.burnSource,
+		"forecast", forecast, "pace", num(st.paceRatio, 1))
 }
 
 // modelElement names the model in use and whether it has a weekly bucket of its own.

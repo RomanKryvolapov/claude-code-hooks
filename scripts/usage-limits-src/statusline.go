@@ -182,13 +182,16 @@ func statusWidth() int {
 
 // limitWindows is where the limits' own windows opened, counted back from their resets: the account's
 // tokens are counted in them. Both are zero without a weekly reset to count back from, and the
-// account's tokens are then left out.
+// account's tokens are then left out; fiveStart alone is zero where there is no running 5-hour
+// window, and the 5-hour count is then left out.
 func limitWindows(st *state) (fiveStart, weekFrom time.Time) {
 	if st == nil || st.r7Local.IsZero() {
 		return time.Time{}, time.Time{}
 	}
-	return st.r5Local.Add(-time.Duration(sessionWindowMin) * time.Minute),
-		st.r7Local.Add(-time.Duration(weeklyWindowMin) * time.Minute)
+	if st.hasSession && !st.r5Local.IsZero() {
+		fiveStart = st.r5Local.Add(-time.Duration(sessionWindowMin) * time.Minute)
+	}
+	return fiveStart, st.r7Local.Add(-time.Duration(weeklyWindowMin) * time.Minute)
 }
 
 // renderStatusline draws the whole status line.

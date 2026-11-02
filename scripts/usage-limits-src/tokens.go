@@ -246,6 +246,7 @@ type tokenStats struct {
 	session             tokenSums
 	sessionWhole        bool
 	account             bool
+	fiveKnown           bool // a 5-hour window is running, so fiveHour means something
 	fiveHour, weekly    tokenSums
 	accountWhole        bool
 	fiveStart, weekFrom int64
@@ -331,12 +332,15 @@ func readTokens(transcript string, fiveStart, from, now time.Time) tokenStats {
 			}
 		}
 		st.account = true
-		st.fiveStart, st.weekFrom = fiveStart.Unix(), from.Unix()
-		if fiveStart.IsZero() {
-			st.fiveStart = st.weekFrom
+		st.fiveKnown = !fiveStart.IsZero()
+		st.weekFrom = from.Unix()
+		if st.fiveKnown {
+			st.fiveStart = fiveStart.Unix()
 		}
 		for _, f := range c.Files {
-			st.fiveHour.add(f.since(st.fiveStart))
+			if st.fiveKnown {
+				st.fiveHour.add(f.since(st.fiveStart))
+			}
 			st.weekly.add(f.since(st.weekFrom))
 		}
 	}
@@ -382,7 +386,11 @@ func tokensText(transcript string, fiveStart, weekFrom, now time.Time) string {
 		text += " SO FAR"
 	}
 	if st.account {
-		text += ", ACCOUNT 5H: " + freshAndCached(st.fiveHour) + ", 7D: " + freshAndCached(st.weekly)
+		text += ", ACCOUNT"
+		if st.fiveKnown {
+			text += " 5H: " + freshAndCached(st.fiveHour) + ","
+		}
+		text += " 7D: " + freshAndCached(st.weekly)
 		if !st.accountWhole {
 			text += " SO FAR"
 		}

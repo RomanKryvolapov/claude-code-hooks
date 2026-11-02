@@ -46,6 +46,7 @@ func TestPlainPicture(t *testing.T) {
 func TestModelBlock(t *testing.T) {
 	now := time.Date(2026, 9, 28, 22, 20, 0, 0, time.Local)
 	st := &state{
+		hasSession: true, burnWindow: "session",
 		r5Local: now.Add(91 * time.Minute), minToReset5: 91, minToExhaust: math.Inf(1),
 		burn: 0.16, burnSource: "sampled", paceRatio: 0.8,
 		zone: "YELLOW", limiter: "session",
@@ -53,12 +54,12 @@ func TestModelBlock(t *testing.T) {
 		activeModel: "claude-opus-5-5", bucketPct: -1, minToBucketExhaust: math.Inf(1),
 	}
 	rows := []statusRow{
-		{label: "5 HOURS", pct: 58, reset: "23:51", windowBar: usageBar(70), windowPct: 70, after: "1:31"},
-		{label: "7 DAYS", pct: 16, reset: "MON 18:00", windowBar: usageBar(5), windowPct: 5, windowCaption: captionWorking, after: "6 days 19:41"},
-		{label: "FABLE", pct: 0, reset: "MON 18:00", windowBar: usageBar(5), windowPct: 5, windowCaption: captionWorking, after: "6 days 19:41"},
-		{label: "OPUS", pct: 12}, // the API gave no reset for it
+		{label: "5 HOURS", limit: "5-hour", pct: 58, reset: "23:51", windowBar: usageBar(70), windowPct: 70, after: "1:31"},
+		{label: "7 DAYS", limit: "7-day", pct: 16, reset: "MON 18:00", windowBar: usageBar(5), windowPct: 5, windowCaption: captionWorking, after: "6 days 19:41"},
+		{label: "FABLE", limit: "Fable weekly bucket", pct: 0, reset: "MON 18:00", windowBar: usageBar(5), windowPct: 5, windowCaption: captionWorking, after: "6 days 19:41"},
+		{label: "OPUS", limit: "Opus weekly bucket", pct: 12}, // the API gave no reset for it
 	}
-	tokens := &tokenStats{session: tokenSums{Input: 2e6, Read: 164e6}, sessionWhole: true, account: true,
+	tokens := &tokenStats{session: tokenSums{Input: 2e6, Read: 164e6}, sessionWhole: true, account: true, fiveKnown: true,
 		fiveHour: tokenSums{Input: 19e6, Read: 1.1e9}, weekly: tokenSums{Input: 20e6, Read: 1.1e9}, accountWhole: true}
 	t.Setenv("CLAUDE_PROJECT_DIR", "")
 	withoutConfigProblems(t, func() {
@@ -71,8 +72,8 @@ func TestModelBlock(t *testing.T) {
 			`<limit name="Fable weekly bucket" used="0%" gone="5% of the working week" resets="MON 18:00, in 6 days 19:41"/>`,
 			`<limit name="Opus weekly bucket" used="12%"/>`,
 			`<tokens session="fresh 2m, cached 164m" account_5h="fresh 19m, cached 1.1b" account_7d="fresh 20m, cached 1.1b"/>`,
-			`<burn rate="0.16%/min, sampled" forecast="lasts to the reset at 23:51" pace="0.8"/>`,
-			`<zone level="YELLOW" limiter="session">be lean: max 2 parallel subagents, no heavy fan-outs, avoid re-reads.</zone>`,
+			`<burn window="5-hour" rate="0.16%/min, sampled" forecast="lasts to the reset at 23:51" pace="0.8"/>`,
+			`<zone level="YELLOW" limiter="session">be lean: avoid re-reads and work nobody asked for.</zone>`,
 			`</usage_limits>`,
 		}, "\n")
 		if got != want {
@@ -91,7 +92,7 @@ func TestModelBlock(t *testing.T) {
 		for _, want := range []string{
 			`format="tokens in k/m/b; clock times local; waits h:mm" at="session start">`,
 			`<stale since="21:26">the usage API has not answered since then; every figure here is as of then</stale>`,
-			`<burn rate="0.16%/min, sampled" forecast="reaches the cap in 0:40" pace="0.8"/>`,
+			`<burn window="5-hour" rate="0.16%/min, sampled" forecast="reaches the cap in 0:40" pace="0.8"/>`,
 			`<config_problem>config: "fetch_ttl_sec" &amp; &lt;more&gt;</config_problem>`,
 			`<model id="claude-opus-5-5" own_bucket="none; the 7-day limit applies"/>`,
 		} {
@@ -350,16 +351,15 @@ func TestLiveLimits(t *testing.T) {
 func withCache(t *testing.T, age time.Duration, raw string) {
 	t.Helper()
 	dir := t.TempDir()
-	saved := []string{claudeDir, cachePath, credPath, gateAsksPath, tokenCachePath}
+	saved := []string{claudeDir, cachePath, credPath, tokenCachePath}
 	savedTTL := fetchTTLSec
 	t.Cleanup(func() {
-		claudeDir, cachePath, credPath, gateAsksPath, tokenCachePath = saved[0], saved[1], saved[2], saved[3], saved[4]
+		claudeDir, cachePath, credPath, tokenCachePath = saved[0], saved[1], saved[2], saved[3]
 		fetchTTLSec = savedTTL
 	})
 	claudeDir = dir
 	cachePath = filepath.Join(dir, "usage-limits-cache.json")
 	credPath = filepath.Join(dir, "no-login.json")
-	gateAsksPath = filepath.Join(dir, "gate.json")
 	tokenCachePath = filepath.Join(dir, "tokens.json")
 	fetchTTLSec = 60
 	if raw == "" {
@@ -401,13 +401,13 @@ func TestStaleFiguresAreMarkedAndClaudeCodesStandIn(t *testing.T) {
 	}
 	after := getCacheObject()
 	if after == nil || after.FetchedAt != before.FetchedAt || !bytes.Equal(after.Raw, before.Raw) || len(after.Samples) != 0 {
-		t.Errorf("a figure from Claude Code reached the cache the gate reads: %+v", after)
+		t.Errorf("a figure from Claude Code reached the cache the injected block reads: %+v", after)
 	}
 	if after.TriedAt == "" {
 		t.Error("the failed attempt was not written down")
 	}
 
-	// Without Claude Code's figures — the injected block, the gate — the cached ones are used, and
+	// Without Claude Code's figures — the injected block, the JSON — the cached ones are used, and
 	// the model is told they are stale and since when.
 	st = getState(argSet{}, "", nil)
 	if st == nil || !st.stale || st.s5 != 40 {
@@ -855,8 +855,7 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 
 // The window that went RED has reset and the next one has not started. The API says so, and the
 // answer has to be what the cache holds from then on: kept behind the new attempt, the spent window's
-// figures were drawn until the next fetch — RED, and the gate refusing spawns, over a reset already
-// past.
+// figures were drawn until the next fetch — RED over a reset already past.
 func TestAnUnstartedWindowReplacesTheSpentOne(t *testing.T) {
 	if runtimeIsDarwin() {
 		t.Skip("reads the login Keychain on macOS")
@@ -867,13 +866,235 @@ func TestAnUnstartedWindowReplacesTheSpentOne(t *testing.T) {
 	withCache(t, 3*time.Hour, spent)
 	asked := usageFromServer(t, `{"five_hour":{"utilization":0,"resets_at":null},"seven_day":{"utilization":10,"resets_at":null}}`)
 
-	if st := getState(argSet{}, "", nil); st != nil {
-		t.Fatalf("drew a window that has not started: s5=%v", st.s5)
-	}
-	if st := getState(argSet{}, "", nil); st != nil {
-		t.Fatalf("drew the spent window from the cache: s5=%v zone=%v", st.s5, st.zone)
+	// The window the API reports is drawn — at its 0%, with no reset to show — and the spent one
+	// never comes back, neither on this call nor from the cache on the next.
+	for _, call := range []string{"fetched", "cached"} {
+		st := getState(argSet{}, "", nil)
+		if st == nil || !st.hasSession || st.s5 != 0 || !st.r5Local.IsZero() || st.zone != "GREEN" {
+			t.Fatalf("%s: want the unstarted window at 0%%, got %+v", call, st)
+		}
 	}
 	if *asked != 1 {
 		t.Fatalf("the API was asked %d times, want 1", *asked)
+	}
+}
+
+// The usage API refuses, with a 429, any client that does not introduce itself as Claude Code; Go's
+// default User-Agent was refused and the whole display went dark.
+func TestTheUsageAPIIsAskedAsClaudeCode(t *testing.T) {
+	if runtimeIsDarwin() {
+		t.Skip("reads the login Keychain on macOS")
+	}
+	withCache(t, 0, "")
+	usageFromServer(t, `{}`)
+	inner := http.DefaultClient.Transport
+	var ua string
+	http.DefaultClient.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		ua = r.Header.Get("User-Agent")
+		return inner.RoundTrip(r)
+	})
+	fetchUsage()
+	if !strings.HasPrefix(ua, "claude-code/") {
+		t.Fatalf("asked with User-Agent %q; the API answers 429 to anything not starting with claude-code/", ua)
+	}
+}
+
+// A verified Ultra account: the API reports no 5-hour window at all — five_hour is null and limits[]
+// holds only weekly entries (reply captured 2026-11-02). Every output still draws the weekly limits,
+// and none of them invents a 5-hour figure.
+func TestNoFiveHourWindowDrawsTheWeekOnly(t *testing.T) {
+	now := time.Now()
+	reset7 := now.Add(30 * time.Hour).UTC().Format(time.RFC3339)
+	withCache(t, 0, fmt.Sprintf(`{"five_hour":null,"seven_day":{"utilization":25.0,"resets_at":%q},`+
+		`"limits":[{"kind":"weekly_all","group":"weekly","percent":25,"resets_at":%q,"scope":null,"is_active":true},`+
+		`{"kind":"weekly_scoped","group":"weekly","percent":0,"resets_at":%q,"scope":{"model":{"id":null,"display_name":"Fable"}},"is_active":false}]}`,
+		reset7, reset7, reset7))
+
+	st := getState(argSet{}, "claude-opus-5-5", nil)
+	if st == nil {
+		t.Fatal("a reply without a 5-hour window was taken for no figures at all")
+	}
+	if st.hasSession || st.burnWindow != "weekly" || st.limiter != "weekly" || st.zone5 != "" {
+		t.Errorf("session %v, burn in %q, limiter %q, session zone %q", st.hasSession, st.burnWindow, st.limiter, st.zone5)
+	}
+	if st.burn <= 0 || math.IsInf(st.horizonMin, 1) {
+		t.Errorf("no weekly burn or horizon: burn %v horizon %v", st.burn, st.horizonMin)
+	}
+
+	rows := limitRows(st)
+	if len(rows) != 2 || rows[0].label != "7 DAYS" || rows[1].label != "FABLE" {
+		t.Fatalf("rows: %+v", rows)
+	}
+	block := modelBlock(st, rows, contextReading{}, nil, false, now)
+	for _, want := range []string{`<limit name="7-day" used="25%"`, `<limit name="Fable weekly bucket" used="0%"`,
+		`<burn window="7-day" rate="`, `limiter="weekly"`} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block lacks %q:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "5-hour") {
+		t.Errorf("a 5-hour figure reached the model:\n%s", block)
+	}
+
+	fiveStart, weekFrom := limitWindows(st)
+	if !fiveStart.IsZero() || weekFrom.IsZero() {
+		t.Errorf("token windows: five %v, week %v", fiveStart, weekFrom)
+	}
+}
+
+// The JSON document says "no 5-hour window" with nulls, never with a zero that reads as measured.
+func TestNoFiveHourWindowIsNullInTheJSON(t *testing.T) {
+	reset7 := time.Now().Add(30 * time.Hour).UTC().Format(time.RFC3339)
+	withCache(t, 0, fmt.Sprintf(`{"five_hour":null,"seven_day":{"utilization":25.0,"resets_at":%q}}`, reset7))
+	out := captureStdout(t, func() {
+		os.Args = []string{"usage-limits", "--mode", "json"}
+		run()
+	})
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	for _, k := range []string{"session_pct", "session_resets_at", "min_to_session_reset", "zone_session"} {
+		if v, ok := doc[k]; !ok || v != nil {
+			t.Errorf("%s = %v (present %v), want null", k, v, ok)
+		}
+	}
+	if doc["burn_window"] != "weekly" || doc["weekly_pct"] != 25.0 || doc["horizon_min"] == nil {
+		t.Errorf("weekly figures: %v", doc)
+	}
+}
+
+// A plan with a 5-hour window keeps it in every output, and burn stays measured in it.
+func TestAFiveHourWindowIsStillDrawn(t *testing.T) {
+	now := time.Now()
+	withCache(t, 0, fmt.Sprintf(`{"five_hour":{"utilization":40,"resets_at":%q},"seven_day":{"utilization":10,"resets_at":%q}}`,
+		now.Add(2*time.Hour).UTC().Format(time.RFC3339), now.Add(80*time.Hour).UTC().Format(time.RFC3339)))
+	st := getState(argSet{}, "", nil)
+	if st == nil || !st.hasSession || st.burnWindow != "session" || st.limiter != "weekly" {
+		t.Fatalf("state: %+v", st)
+	}
+	if rows := limitRows(st); rows[0].label != "5 HOURS" || rows[0].reset == "" {
+		t.Errorf("first row: %+v", rows[0])
+	}
+}
+
+// captureStdout runs fn and returns what it printed, with os.Args restored afterwards.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	savedOut, savedArgs := os.Stdout, os.Args
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout, os.Args = savedOut, savedArgs }()
+	fn()
+	w.Close()
+	b, _ := io.ReadAll(r)
+	return string(b)
+}
+
+// On the weekly window the API's whole percents are too coarse for a rate taken between samples
+// minutes apart: a 24 -> 25 step five minutes apart read as a week emptied in six hours while the
+// spend was well behind the clock. The pace stands there.
+func TestTheWeeklyBurnIsThePace(t *testing.T) {
+	now := time.Now()
+	reset7 := now.Add(60 * time.Hour).UTC().Format(time.RFC3339)
+	withCache(t, 0, fmt.Sprintf(`{"five_hour":null,"seven_day":{"utilization":25,"resets_at":%q}}`, reset7))
+	c := getCacheObject()
+	for i, v := range []float64{24, 25} {
+		c.Samples = append(c.Samples, sample{T: now.Add(time.Duration(i*5-6) * time.Minute).Format(time.RFC3339Nano),
+			S7: v, R7: reset7})
+	}
+	saveCache(*c)
+
+	st := getState(argSet{}, "", nil)
+	if st == nil || st.burnWindow != "weekly" || st.burnSource != "pace" {
+		t.Fatalf("burn in %q from %q", st.burnWindow, st.burnSource)
+	}
+	if !math.IsInf(st.minToExhaust, 1) && st.minToExhaust < st.minToReset7 {
+		t.Errorf("the week is forecast to run out in %.0f min, before its reset in %.0f", st.minToExhaust, st.minToReset7)
+	}
+}
+
+// A 429 carries the time to come back. Asked every fetch period through it, the API only kept
+// refusing; until that time it is not asked at all, and the last figures stand in, marked stale.
+func TestARefusalsRetryAfterIsKept(t *testing.T) {
+	if runtimeIsDarwin() {
+		t.Skip("reads the login Keychain on macOS")
+	}
+	withCache(t, 3*time.Hour, `{"five_hour":null,"seven_day":{"utilization":25,"resets_at":null}}`)
+	usageFromServer(t, `{}`)
+	asked := 0
+	http.DefaultClient.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		asked++
+		h := http.Header{}
+		h.Set("Retry-After", "300")
+		return &http.Response{StatusCode: 429, Header: h, Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+	fetchTTLSec = 0 // every call would ask, but for the pause
+
+	for i := 0; i < 3; i++ {
+		if st := getState(argSet{}, "", nil); st == nil || !st.stale || st.s7 != 25 {
+			t.Fatalf("call %d: want the cached figures, stale: %+v", i, st)
+		}
+	}
+	if asked != 1 {
+		t.Errorf("the API was asked %d times through its pause, want 1", asked)
+	}
+	nb, ok := parseTime(getCacheObject().NotBefore)
+	if !ok || nb.Sub(time.Now()) < 290*time.Second {
+		t.Errorf("not_before = %v", getCacheObject().NotBefore)
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	now := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
+	for h, want := range map[string]time.Duration{
+		"":                              0,
+		"0":                             0,
+		"177":                           177 * time.Second,
+		"soon":                          0,
+		"-5":                            0,
+		"999999":                        maxRetryAfter,
+		"Mon, 02 Nov 2026 10:02:00 GMT": 2 * time.Minute,
+		"Mon, 02 Nov 2026 09:00:00 GMT": 0,
+	} {
+		if got := retryAfter(h, now); got != want {
+			t.Errorf("Retry-After %q = %v, want %v", h, got, want)
+		}
+	}
+}
+
+// The model's own bucket is weekly and in whole percents too: its burn is its own pace, so a 24%
+// Fable bucket 108 hours into its week does not read as a cap reached before the reset.
+func TestTheBucketBurnIsItsOwnPace(t *testing.T) {
+	reset := time.Now().Add(60 * time.Hour).UTC().Format(time.RFC3339)
+	withCache(t, 0, fmt.Sprintf(`{"five_hour":null,"seven_day":{"utilization":25,"resets_at":%q},`+
+		`"limits":[{"kind":"weekly_scoped","percent":24,"resets_at":%q,"scope":{"model":{"display_name":"Fable"}}}]}`, reset, reset))
+	st := getState(argSet{}, "claude-fable-5-1", nil)
+	if st == nil || st.activeBucket == nil || st.bucketBurnSource != "pace" {
+		t.Fatalf("bucket burn from %q: %+v", st.bucketBurnSource, st)
+	}
+	if want := 24 / (108 * 60.0); math.Abs(st.bucketBurn-want) > 1e-5 {
+		t.Errorf("bucket burn %v, want %v", st.bucketBurn, want)
+	}
+	if !math.IsInf(st.minToBucketExhaust, 1) {
+		t.Errorf("the bucket is forecast to run out in %.0f min, before its reset", st.minToBucketExhaust)
+	}
+}
+
+// A stored pause longer than any the hook writes — a clock that moved back — is not honoured.
+func TestAnImplausiblePauseIsIgnored(t *testing.T) {
+	if runtimeIsDarwin() {
+		t.Skip("reads the login Keychain on macOS")
+	}
+	withCache(t, 3*time.Hour, `{"five_hour":null,"seven_day":{"utilization":25,"resets_at":null}}`)
+	c := getCacheObject()
+	c.NotBefore = time.Now().Add(48 * time.Hour).Format(time.RFC3339Nano)
+	saveCache(*c)
+	asked := usageFromServer(t, `{"five_hour":null,"seven_day":{"utilization":26,"resets_at":null}}`)
+	if st := getState(argSet{}, "", nil); st == nil || st.s7 != 26 || *asked != 1 {
+		t.Fatalf("asked %d times, s7 %v", *asked, st)
 	}
 }

@@ -19,8 +19,9 @@ macOS, Linux and Windows, and everything else is plain text.
 
 ## Your usage limits, always in view
 
-A Claude subscription has several limits running at once: a **5-hour window**, a **weekly window**,
-and for some models a **weekly allowance of their own**. Every Claude session you have open draws
+A Claude subscription has several limits running at once: a **5-hour window** on most plans, a
+**weekly window**, and for some models a **weekly allowance of their own**. A verified Ultra account
+has no 5-hour window at all; the hook then simply shows no row for it. Every Claude session you have open draws
 from the same limits. Claude Code shows them when you type `/usage`, but the model — the one deciding
 how much work to take on — never sees them. So you either stop early to be safe, or run into the wall
 in the middle of something.
@@ -52,7 +53,7 @@ The top line is about this session:
 - **CACHE** — how long the prompt cache stays warm. Once it runs out, the next message costs more,
   because the whole conversation has to be cached again.
 - **SESSION** and **ACCOUNT** — the tokens this session has used, and those of every session on this
-  computer in the 5-hour and weekly windows. **FRESH** is new work. **CACHED** is the conversation
+  computer in the 5-hour window (where there is one) and the weekly one. **FRESH** is new work. **CACHED** is the conversation
   being read back from the cache on every message; it costs a tenth as much, which is why the number
   gets so large.
 
@@ -73,8 +74,8 @@ figures, no bars:
 <limit name="7-day" used="16%" gone="5% of the working week" resets="MON 18:00, in 6 days 19:41"/>
 <limit name="Fable weekly bucket" used="0%" gone="5% of the working week" resets="MON 18:00, in 6 days 19:41"/>
 <tokens session="fresh 2m, cached 164m" account_5h="fresh 19m, cached 1.1b" account_7d="fresh 20m, cached 1.1b"/>
-<burn rate="0.16%/min, sampled" forecast="lasts to the reset at 23:50" pace="0.8"/>
-<zone level="YELLOW" limiter="session">be lean: max 2 parallel subagents, no heavy fan-outs, avoid re-reads.</zone>
+<burn window="5-hour" rate="0.16%/min, sampled" forecast="lasts to the reset at 23:50" pace="0.8"/>
+<zone level="YELLOW" limiter="session">be lean: avoid re-reads and work nobody asked for.</zone>
 </usage_limits>
 ```
 
@@ -82,11 +83,10 @@ Numbers alone change nothing. The **session-budget** rule is what makes the mode
 the effort to the task rather than to what is left, and stop short of a limit instead of running into
 it. The last line — the **zone**, from GREEN to RED — says how tight things are.
 
-### A brake near the limit
+### Extra agents follow the task, not the limits
 
-Extra agents are the fastest way to burn through a budget, so when a limit is nearly used up the hook
-steps in: in the ORANGE zone it asks you once per session before the model launches one, and in the
-RED zone it refuses. The reviewer is always let through.
+Nothing stops the model from launching an extra agent because a limit is near. Whether it launches one
+is decided by how complex the task is; the zone only narrows how much work it takes on.
 
 ## A log of every session
 
@@ -163,7 +163,6 @@ They live in `.claude/usage-limits-config.json`:
 | `time_zone`           | The time zone your working day is in                                             |
 | `zones`               | The percentages at which the zones turn YELLOW, ORANGE and RED                   |
 | `limit_ahead_red_pct` | How far spending may run ahead of time before a bar is fully red (20 by default) |
-| `gate_enabled`        | `false` keeps the display but never stops the model from launching agents        |
 | `fetch_ttl_sec`       | How often your usage is fetched, in seconds (every minute by default)            |
 
 If the hook cannot use a value, it says so on a `CONFIG` line under the bars and carries on with the
