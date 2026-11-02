@@ -64,11 +64,11 @@ choice.
 
 ## Zones narrow how you spend
 
-| Zone   | 5-hour, where the plan has it | Weekly and buckets | Behaviour                                                |
-| ------ | ----------------------------- | ------------------ | -------------------------------------------------------- |
-| GREEN  | < 50%                         | < 80%              | spend to task size                                       |
-| YELLOW | 50–80%                        | 80–90%             | be lean: no re-reads, nothing nobody asked for           |
-| ORANGE | 80–90%                        | 90–95%             | essential edits only; offer to defer large tasks         |
+| Zone   | 5-hour, where the plan has it | Weekly and buckets | Behaviour                                                           |
+| ------ | ----------------------------- | ------------------ | ------------------------------------------------------------------- |
+| GREEN  | < 50%                         | < 80%              | spend to task size                                                  |
+| YELLOW | 50–80%                        | 80–90%             | be lean: no re-reads, nothing nobody asked for                      |
+| ORANGE | 80–90%                        | 90–95%             | essential edits only; offer to defer large tasks                    |
 | RED    | ≥ 90%                         | ≥ 95%              | finish, write `.claude/CHECKPOINT.md`, no new tasks until the reset |
 
 These are the shipped defaults; `.claude/usage-limits-config.json` may change them, and the hook reports
