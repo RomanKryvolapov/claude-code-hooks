@@ -1,17 +1,23 @@
 # claude-code-hooks
 
 A whole `.claude/` for a project, ready to copy into one: three hooks shipped as committed static
-binaries (macOS, Linux, Windows) with the Go sources beside them, nine behaviour rules, a reviewing
-subagent, a skill about writing prompts, and the `settings.json` that wires it together. No runtime
-to install — no Node, no Python, no Go.
+binaries (macOS, Linux, Windows) with the Go sources beside them, a plugin that draws the limits
+hook's picture in VS Code, nine behaviour rules, a reviewing subagent, a skill about writing prompts,
+and the `settings.json` that wires it together. No runtime to install — no Node, no Python, no Go.
 
 **What is in the repository, all of it equally part of the point:**
 
 - **`usage-limits`** — live Anthropic subscription usage (the 5-hour window where the plan has one,
-  the 7-day window, per-model weekly buckets) injected into the model's context and drawn in the
-  status line. Its weekly gauge measures **working time** — configurable hours and a weight per
-  weekday — not calendar time. It never gates subagent spawns: whether to launch one follows the
+  the 7-day window, per-model weekly buckets) injected into the model's context, and the two windows
+  drawn in the status line, a gauge cell per percent. Its weekly gauge measures **working time** —
+  configurable hours and a weight per weekday — not calendar time. It never gates subagent spawns: whether to launch one follows the
   task's complexity alone.
+- **`usage-limits-panel`** — the status line drawn above the prompt in the VS Code extension, which
+  shows no status line, its gauges as bars. A plugin in `scripts/usage-limits-panel/`, loaded into
+  every session on a machine by `CLAUDE_CODE_PLUGIN_DIRS` in the person's own
+  `~/.claude/settings.json` — not from `.claude/skills/`, from which VS Code sessions do not load it.
+  It runs the limits hook's binary in its `panel` mode, which hands it the status line's figures and
+  colours as data, and computes nothing of its own.
 - **`work-audit`** — an append-only log of what actually happened in each session: the prompts, the
   choices made in interactive questions, per-turn model and tool and subagent counts, the files
   changed with line ranges, and the final answer. Written mechanically, so it does not depend on the
@@ -39,7 +45,8 @@ and copied without it the numbers are decoration. `finishing-work` launches `cha
 name, so that rule without that file has a grading stage that silently cannot run. And
 `finishing-work` expects the audit log — what `work-audit` writes — to be staged with
 the work wherever a project tracks it. Otherwise the hooks, the rules and the skill are independent
-of each other.
+of each other. Inside the hooks, `usage-limits-panel` runs the `usage-limits` binary, so it goes with
+that hook.
 
 **Rules load by themselves.** Claude Code reads every `.md` under `.claude/rules/` at launch, with
 the same priority as `.claude/CLAUDE.md` — no import and no line here is needed. That also means all
@@ -60,7 +67,9 @@ project.
 The Go sources are `scripts/usage-limits-src/`, `scripts/work-audit-src/` and
 `scripts/play-sound-src/`. Every tunable default of the limits hook is declared in
 `scripts/usage-limits-src/constants.go`; the config file only overrides it. Rebuild with
-`sh scripts/<name>-src/build.sh`, test with `go -C scripts/usage-limits-src test ./...`.
+`sh scripts/<name>-src/build.sh`, test with `go -C scripts/usage-limits-src test ./...`. The panel
+plugin's source is `scripts/usage-limits-panel/hooks/register.tsx`, which Claude Code runs as it is:
+nothing to build.
 
 The repository is under the MIT license, in `LICENSE`.
 
@@ -72,6 +81,7 @@ thing that ships, so a Go upgrade means rebuilding all of them in the same chang
 ## Gates
 
 `go -C scripts/usage-limits-src vet ./...` and `go -C scripts/usage-limits-src test ./...` for a
-change to the limits hook. For any change to a hook's source, rebuild it and commit the binaries with
+change to the limits hook. `claude plugin validate scripts/usage-limits-panel` and
+`claude plugin test scripts/usage-limits-panel` for a change to the panel plugin. For any change to a hook's source, rebuild it and commit the binaries with
 it. The limits hook builds reproducibly, so a rebuild of its unchanged source shows no diff; the other
 two stamp version-control data and may differ between checkouts.

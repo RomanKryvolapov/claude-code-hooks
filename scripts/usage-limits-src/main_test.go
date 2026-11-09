@@ -730,7 +730,7 @@ func TestLoadConfigRefusesNulls(t *testing.T) {
       "fetch_ttl_sec": null, "context_window_tokens": null,
       "limit_ahead_red_pct": null, "time_zone": null, "working_week": null, "zones": null
     }`, func() {
-		if fetchTTLSec != 60 || contextWindowTokens != 1_000_000.0 || limitAheadRed != 20 {
+		if fetchTTLSec != 60 || contextWindowTokens != 1_000_000.0 || limitAheadRed != 10 {
 			t.Errorf("a null overwrote a default: ttl %v, context %v, red lead %v",
 				fetchTTLSec, contextWindowTokens, limitAheadRed)
 		}
@@ -790,7 +790,7 @@ func TestLoadConfigIsolatesOneBadSetting(t *testing.T) {
 			if field != "limit_ahead_red_pct" && limitAheadRed != 35 {
 				t.Errorf("%s took limit_ahead_red_pct with it (%v)", field, limitAheadRed)
 			}
-			if field == "limit_ahead_red_pct" && limitAheadRed != 20 {
+			if field == "limit_ahead_red_pct" && limitAheadRed != 10 {
 				t.Errorf("a red lead written as a string was applied anyway (%v)", limitAheadRed)
 			}
 			if field != "time_zone" && timeZoneName != "Asia/Tokyo" {
@@ -956,7 +956,7 @@ func TestLoadConfigRefusesOutOfRangeNumbers(t *testing.T) {
 func TestLoadConfigRefusesARedLeadOutsideTheScale(t *testing.T) {
 	for _, bad := range []string{"0", "-5", "100.5"} {
 		withConfigFile(t, `{"limit_ahead_red_pct": `+bad+`}`, func() {
-			if limitAheadRed != 20 {
+			if limitAheadRed != 10 {
 				t.Errorf("%s was applied: %v", bad, limitAheadRed)
 			}
 			if !problemsMentioning(`"limit_ahead_red_pct"`) || !problemsMentioning("so "+bad+" was ignored") {

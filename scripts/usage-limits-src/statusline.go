@@ -4,8 +4,9 @@
 // only one painted and the only one fitted to the terminal. It is also the only one Claude Code
 // hands the real size of the context window and its own 5-hour and 7-day figures, which stand in
 // for the usage API's, without a word, when those have gone stale. Beside the CONTEXT gauge it
-// writes how many tokens the session has used; otherwise the picture is the one the injected block
-// carries, without the lines under it.
+// writes how long the prompt cache stays warm, and last, under the limits, how many tokens the
+// session and the account have used. Of the limits it draws the account's windows alone; a model's
+// weekly bucket of its own is the injected block's.
 
 package main
 
@@ -36,12 +37,20 @@ type statusInput struct {
 		FiveHour *liveWindow `json:"five_hour"`
 		SevenDay *liveWindow `json:"seven_day"`
 	} `json:"rate_limits"`
-	PromptCache *struct {
-		Warm            bool     `json:"warm"`
-		CachingObserved bool     `json:"caching_observed"`
-		TTL             string   `json:"ttl"`        // the lifetime it was written with: "5m" or "1h"
-		ExpiresAt       *float64 `json:"expires_at"` // Unix seconds; null once nothing is cached
-	} `json:"prompt_cache"`
+	PromptCache *promptCache `json:"prompt_cache"`
+	// ContextEstimate is the panel plugin's alone: what /context estimates the context holds, sent
+	// while no request has measured it — before a session's first reply; see renderPanel.
+	ContextEstimate float64 `json:"context_estimate"`
+}
+
+// promptCache is how long the prompt cache stays warm, as Claude Code reports it to a status line —
+// or, for the panel, which Claude Code hands no such reading, as the transcript shows it; see
+// transcriptPromptCache.
+type promptCache struct {
+	Warm            bool     `json:"warm"`
+	CachingObserved bool     `json:"caching_observed"`
+	TTL             string   `json:"ttl"`        // the lifetime it was written with: "5m" or "1h"
+	ExpiresAt       *float64 `json:"expires_at"` // Unix seconds; null once nothing is cached
 }
 
 type liveWindow struct {
@@ -101,49 +110,42 @@ func (in *statusInput) statusContext() contextReading {
 	return r
 }
 
-// contextTail is what the status line writes after the CONTEXT gauge: how long the prompt cache
-// stays warm, then the tokens of the session and of the account in the limits' windows — whichever
-// there is — "CACHE 0:59, SESSION: FRESH 1m CACHED 108m, ACCOUNT 5H: FRESH 20m CACHED 1.2b, 7D: …".
-func (in *statusInput) contextTail(now time.Time, p painter, fiveStart, weekFrom time.Time) string {
-	var parts []string
-	if c := in.cacheText(now, p); c != "" {
-		parts = append(parts, c)
-	}
-	if s := tokensText(in.TranscriptPath, fiveStart, weekFrom, now); s != "" {
-		parts = append(parts, s)
-	}
-	if len(parts) == 0 {
+// cacheText is how long the prompt cache stays warm, painted on the gauges' scale; see cacheReading.
+// Nothing when Claude Code reports no cache: an older version, or no reply yet.
+func (in *statusInput) cacheText(now time.Time, p painter) string {
+	text, at, ok := in.cacheReading(now)
+	if !ok {
 		return ""
 	}
-	return strings.Join(parts, ", ")
+	return "CACHE " + p.paint(text, p.gaugeColour(at))
 }
 
-// cacheText is how long the prompt cache stays warm. Past that, the next request writes the whole
-// context into the cache again — the dearest request a long session makes. The time left is painted
-// on the gauges' scale: green with the whole cache lifetime ahead, red as it runs out, and a cold
-// cache red. Nothing when Claude Code reports no cache: an older version, or no reply yet.
-func (in *statusInput) cacheText(now time.Time, p painter) string {
+// cacheReading is how long the prompt cache stays warm — a wait, COLD, or WARM where Claude Code
+// gives no end — and where that stands on the gauges' scale: green with the whole cache lifetime
+// ahead, red as it runs out, and a cold cache red. Past that, the next request writes the whole
+// context into the cache again — the dearest request a long session makes. Not ok when Claude Code
+// reports no cache.
+func (in *statusInput) cacheReading(now time.Time) (text string, at float64, ok bool) {
 	c := in.PromptCache
 	if c == nil || !c.CachingObserved {
-		return ""
+		return "", 0, false
 	}
-	cold := "CACHE " + p.paint("COLD", p.gaugeColour(1))
 	if !c.Warm {
-		return cold
+		return "COLD", 1, true
 	}
 	if c.ExpiresAt == nil {
-		return "CACHE " + p.paint("WARM", p.gaugeColour(0))
+		return "WARM", 0, true
 	}
 	left := time.Unix(int64(*c.ExpiresAt), 0).Sub(now).Minutes()
 	if left <= 0 {
-		return cold
+		return "COLD", 1, true
 	}
 	// The lifetime the cache was written with, "5m" or "1h"; an hour where Claude Code does not say.
 	lifetime := 60.0
 	if d, err := time.ParseDuration(c.TTL); err == nil && d > 0 {
 		lifetime = d.Minutes()
 	}
-	return "CACHE " + p.paint(formatWait(left), p.gaugeColour(1-left/lifetime))
+	return formatWait(left), 1 - left/lifetime, true
 }
 
 // isJSONValue reports whether a field was present and not null.
@@ -194,35 +196,44 @@ func limitWindows(st *state) (fiveStart, weekFrom time.Time) {
 	return fiveStart, st.r7Local.Add(-time.Duration(weeklyWindowMin) * time.Minute)
 }
 
-// renderStatusline draws the whole status line.
-func renderStatusline(args argSet, rawInput string, hookInput map[string]any, now time.Time) string {
-	in := decodeStatusInput(rawInput)
+// limitsState is what the limits are now, for the status line and the panel: for the model Claude
+// Code names, or the one worked out from the session where it names none, with Claude Code's own
+// figures standing in for stale ones of the usage API's. Nil without any figures.
+func (in *statusInput) limitsState(args argSet, hookInput map[string]any, now time.Time) *state {
 	activeModel := ""
 	if in.Model != nil && in.Model.ID != "" {
 		activeModel = cleanModelString(in.Model.ID)
 	} else {
 		activeModel = getActiveModel(args, hookInput)
 	}
-	st := getState(args, activeModel, in.liveLimits(now))
+	return getState(args, activeModel, in.liveLimits(now))
+}
+
+// renderStatusline draws the whole status line.
+func renderStatusline(args argSet, rawInput string, hookInput map[string]any, now time.Time) string {
+	in := decodeStatusInput(rawInput)
+	st := in.limitsState(args, hookInput, now)
 	fiveStart, weekFrom := limitWindows(st)
 	p := statusPainter()
-	o := renderOpts{p: p, width: statusWidth(), contextTail: in.contextTail(now, p, fiveStart, weekFrom)}
+	// The CONTEXT line carries how long the cache stays warm and, two spaces on, the token counts,
+	// where the terminal has room for them; see renderOpts.tokens.
+	o := renderOpts{p: p, width: statusWidth(), contextTail: in.cacheText(now, p),
+		tokens: tokensText(in.TranscriptPath, fiveStart, weekFrom, now)}
 
+	var lines []string
 	if st == nil {
-		var lines []string
-		if top := topLine(in.statusContext(), o); top != "" {
+		// No limits to line the CONTEXT gauge up with: all of it beside the gauge, which shortens to fit.
+		ctx := in.statusContext()
+		o.contextTail = o.withTokens()
+		if top := topLine(ctx, o, headsFor(nil, ctx), ctxBarCells); top != "" {
 			lines = append(lines, top)
 		}
 		lines = append(lines, "LIMITS -> N/A")
-		if rows := configRows(); len(rows) > 0 {
-			lines = append(lines, renderTextRows(rows))
-		}
-		return strings.Join(lines, "\n")
+	} else {
+		lines = append(lines, renderLimits(windowRows(st, now), in.statusContext(), o))
 	}
-
-	out := renderLimits(limitRows(st), in.statusContext(), o)
 	if rows := configRows(); len(rows) > 0 {
-		out += "\n" + renderTextRows(rows)
+		lines = append(lines, renderTextRows(rows))
 	}
-	return out
+	return strings.Join(lines, "\n")
 }

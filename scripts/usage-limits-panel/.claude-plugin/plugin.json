@@ -1,0 +1,7 @@
+{
+  "name": "usage-limits-panel",
+  "version": "0.1.0",
+  "description": "The usage-limits status line above the prompt in the VS Code extension, which shows no status line, its gauges drawn as bars.",
+  "author": { "name": "Roman Kryvolapov" },
+  "types": "./types/index.d.ts"
+}

@@ -6,8 +6,12 @@ Linux and Windows with the Go sources they were built from, nine behaviour rules
 subagent, a skill about writing prompts, and the `settings.json` that wires it together.
 
 - `usage-limits` — shows live Anthropic subscription usage (the 5-hour window where the plan has one,
-  the 7-day window, per-model weekly buckets) in the model's context and the status line. Its weekly
-  gauge measures **working time**, not calendar time.
+  the 7-day window, and per-model weekly buckets for the model alone) in the model's context and the
+  status line. Its weekly gauge measures **working time**, not calendar time.
+- `scripts/usage-limits-panel/` — the limits hook's status line drawn above the prompt in the VS Code
+  extension, which shows no status line. A plugin loaded into every session on a machine by
+  `CLAUDE_CODE_PLUGIN_DIRS` in the person's own `~/.claude/settings.json`; it runs the `usage-limits`
+  binary of the project the session is in.
 - `work-audit` — writes an append-only record of each session (prompts, choices, per-turn stats,
   files changed, final answer) under `management/logs/`.
 - `play-sound` — plays a sound when Claude Code stops or needs attention.
@@ -34,7 +38,9 @@ them, so **install it too, or the numbers are decoration.** `finishing-work.md` 
 `change-reviewer` by name, so install that subagent whenever you install that rule, or its grading
 stage silently cannot run. And `finishing-work.md`
 expects the audit log `work-audit` writes to be staged with the work wherever the project tracks it.
-Otherwise the hooks, the rules and the skill are independent — take what is wanted.
+Inside the hooks, `usage-limits-panel` runs the `usage-limits` binary of the project it is in, so it
+shows nothing where that hook's binaries are missing. Otherwise the hooks, the rules and the skill
+are independent — take what is wanted.
 
 **There is no runtime to install.** No Node, no Python, no Go. The binaries are committed on purpose.
 
@@ -269,6 +275,17 @@ the larger value.
 }
 ```
 
+**The VS Code panel is wired in the person's own settings, not the project's** — a project's settings
+cannot load it. It is a change to their machine rather than to the target, so ask before making it.
+With their yes, name the panel's folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` of
+`~/.claude/settings.json`, as an absolute path into a checkout that stays where it is, not into a
+temporary clone. Merge it like any other setting: keep everything the file holds, and where the
+variable already names folders, append this one after the platform's path-list separator (`;` on
+Windows, `:` elsewhere). Once per machine is enough: it then loads in every session there and runs
+each project's own binaries. Do not put it in the target's `.claude/skills/` instead — the VS Code
+extension does not load it from there, for the reason REFERENCE.md gives under "In VS Code: the
+panel".
+
 ### 3. Say what you installed — the rules need no wiring
 
 **Copying the files is the whole installation.** Claude Code discovers every `.md` under
@@ -336,12 +353,24 @@ CLAUDE_PROJECT_DIR=<target> <target>/.claude/hooks/usage-limits --mode statuslin
 
 Two stacked lines per limit is a working install. `LIMITS -> N/A` means it ran but has no usage data
 — usually not signed in. Run by hand like this it is not handed what Claude Code gives a real
-status line, so the `CONTEXT` line, with the session's tokens beside it, appears only in a session. **Empty output means the launcher found no binary**: check that the
+status line, so the `CONTEXT` line and the session's token counts under the limits appear only in a session. **Empty output means the launcher found no binary**: check that the
 binaries landed in one of `scripts/`, `scripts/claude-code/`, `.claude/bin/`, and that they are
 executable.
 
 A `CONFIG` line under the gauges names anything in the config the hook could not use. It should not
 be there after a clean install.
+
+Then the panel, where it was set up. Claude Code should list it as loaded, and the binaries should
+answer its mode with the status line's figures as JSON:
+
+```sh
+cd <target> && claude plugin list
+CLAUDE_PROJECT_DIR=<target> <target>/.claude/hooks/usage-limits --mode panel </dev/null
+```
+
+The list names `usage-limits-panel@inline` with `loaded` under it, and the second command prints one
+line of JSON whose `limits` holds an entry per limit — empty output means binaries older than the
+panel. In a new VS Code session the limits then show above the box Claude Code is typed into.
 
 Then the sound. It prints nothing either way, so time it — a run that found its binary blocks
 while the wav plays, one that found nothing returns at once:

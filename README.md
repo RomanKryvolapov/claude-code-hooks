@@ -3,8 +3,8 @@
 Everything [Claude Code](https://claude.com/claude-code) picks up from a repository, in one folder
 you copy into a project:
 
-- a **status line** that shows how much of your Claude subscription you have used, and gives the
-  model the same numbers;
+- a **status line** that shows how much of your Claude subscription you have used — in the terminal,
+  and as a panel above the prompt in **VS Code** — and gives the model the same numbers;
 - a **session log** that records what actually happened in each session;
 - a **sound** when Claude finishes or needs you;
 - **nine rules** that shape how the model works — when to stop and ask, what "finished" means, how to
@@ -15,31 +15,44 @@ you copy into a project:
 There is nothing to install — no Node, no Python, no Go. The hooks are small ready-built programs for
 macOS, Linux and Windows, and everything else is plain text.
 
-![The status line under the Claude Code prompt: a green CONTEXT bar with the prompt cache and the token counts beside it, then three limits, each a LIMIT bar over a TIME or WORK bar](usage-limits-statusline-context-low.png)
+In a terminal, the status line under the prompt:
+
+![The status line in a terminal: a green CONTEXT bar with the token counts beside it, then the weekly limit, its LIMIT bar magenta over a white WORK bar, the empty part of every bar shaded towards red](images/statusline-terminal.png)
+
+In VS Code, which shows no status line, the same picture above the box you type in:
+
+![The same in VS Code's Claude Code panel: the CONTEXT, LIMIT and WORK bars stretched across the panel, the token counts on a line of their own under them](images/panel-vscode.png)
 
 ## Your usage limits, always in view
 
 A Claude subscription has several limits running at once: a **5-hour window** on most plans, a
 **weekly window**, and for some models a **weekly allowance of their own**. A verified Ultra account
-has no 5-hour window at all; the hook then simply shows no row for it. Every Claude session you have open draws
-from the same limits. Claude Code shows them when you type `/usage`, but the model — the one deciding
+has no 5-hour window at all; the hook then simply shows no row for it. The status line and the VS Code
+panel show the two windows; a model's own allowance goes only into the numbers the model is given. Every Claude session
+you have open draws from the same limits. Claude Code shows them when you type `/usage`, but the model — the one deciding
 how much work to take on — never sees them. So you either stop early to be safe, or run into the wall
 in the middle of something.
 
 This hook keeps the numbers in front of both of you.
 
-### Reading the status line
+### Reading the bars
 
-Each limit is a pair of bars:
+The terminal and VS Code show the same bars, figures and colours; what differs in VS Code is
+[below](#in-vs-code). Each limit is a pair of bars:
 
 - **LIMIT** — how much of it you have spent;
 - **TIME** — how much of the window has passed. The weekly limits say **WORK** instead, because they
   count working hours (more on that below).
 
+In a terminal every bar has one cell for each percent, so it reads straight as the number beside it;
+only a terminal too narrow for a hundred cells gets shorter bars.
+
 **When the top bar is ahead of the bottom one, you are spending faster than time is passing**, and the
-limit will run out before it resets. The colour tells you the same at a glance: green while spending
-keeps pace with time, then yellow, then red once it is 20 points ahead. **RESET AT** is when the limit
-resets, and **RESET AFTER** is how long that is from now.
+limit will run out before it resets. The colour tells you the same at a glance: the LIMIT bar is
+blue while spending keeps pace with time, and its filled part turns through violet to red as
+spending gets ahead, fully red once it is 10 points ahead, while its empty part shows that whole
+scale, blue to red; the TIME and WORK bars are white. **RESET AT** is
+when the limit resets, and **RESET AFTER** is how long that is from now.
 
 **The weekly bars count working hours, not calendar hours.** Nobody spends budget at four in the
 morning, and weekends use little of it — so a calendar bar ran ahead of the spend every Monday and
@@ -49,18 +62,52 @@ settings file.
 The top line is about this session:
 
 - **CONTEXT** — how full the conversation is. This is not a subscription limit; it is why a long
-  session eventually gets compacted. It turns from green to red as it fills.
+  session eventually gets compacted. It turns from green to red as it fills, and its empty part
+  shows the colours still ahead of it.
 - **CACHE** — how long the prompt cache stays warm. Once it runs out, the next message costs more,
   because the whole conversation has to be cached again.
 - **SESSION** and **ACCOUNT** — the tokens this session has used, and those of every session on this
-  computer in the 5-hour window (where there is one) and the weekly one. **FRESH** is new work. **CACHED** is the conversation
-  being read back from the cache on every message; it costs a tenth as much, which is why the number
-  gets so large.
+  computer in the 5-hour window (where there is one) and the weekly one. **FRESH** is new work.
+  **CACHED** is the conversation being read back from the cache on every message; it costs a tenth as
+  much, which is why the number gets so large. On a terminal too narrow for them beside the bar, they
+  move to a line of their own under the limits.
 
 Late in a long session the CONTEXT bar turns red. The limits keep their own colours, because those
-follow your pace rather than how full they are:
+follow your pace rather than how full they are. Here on a plan with a 5-hour window as well as the
+weekly one:
 
-![The same status line with the context at 88 %: the CONTEXT bar orange-red, the limits as before](usage-limits-statusline-context-high.png)
+![The status line with the context at 88 %: the CONTEXT bar orange-red, then the 5-hour limit, blue because it is behind its TIME bar, and the weekly limit](images/statusline-context-high.png)
+
+### In VS Code
+
+Claude Code's panel in VS Code shows no status line, so a small plugin that comes with this folder
+draws the same picture just above the box you type in. It takes everything from the hook — the
+figures, the words and the colours — so it always says what the status line would. Three things look
+different:
+
+- the bars are drawn as solid bars, each as wide as the panel allows, rather than as rows of
+  characters;
+- the token counts stand on a line of their own, last;
+- before the first reply of a new chat, when nothing has measured the context yet, CONTEXT shows
+  Claude Code's own estimate, marked with **≈**.
+
+You turn it on once per computer, not per project, by naming its folder — wherever this repository
+is on your machine — in your own `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIRS": "D:\\src\\claude-code-hooks\\scripts\\usage-limits-panel"
+  }
+}
+```
+
+From then on it shows in every new VS Code chat, in every project that has the hook, and nowhere
+else: a terminal has the status line itself. It needs version 2.1.309 or later of the VS Code
+extension. A project whose hook is older than the plugin gets a line saying so in place of the bars;
+copying in the current hook fixes it.
+[REFERENCE.md](REFERENCE.md#in-vs-code-the-panel) says why it is set up this way and how it differs
+from the status line.
 
 ### What the model sees
 
@@ -153,6 +200,9 @@ Then merge `.claude/settings.json` into the project's own, or copy it if the pro
 [REFERENCE.md](REFERENCE.md#installing-this-in-another-project). Without these, the hooks quietly do
 nothing for anyone working on a Mac or Linux.
 
+**Using VS Code?** Copying the files is not enough for the panel: it is turned on once per computer,
+as [In VS Code](#in-vs-code) shows, and then draws the bars in every project that has the hook.
+
 ## Settings you might want to change
 
 They live in `.claude/usage-limits-config.json`:
@@ -162,7 +212,7 @@ They live in `.claude/usage-limits-config.json`:
 | `working_week`        | Which hours you work each day, and how much each day counts                      |
 | `time_zone`           | The time zone your working day is in                                             |
 | `zones`               | The percentages at which the zones turn YELLOW, ORANGE and RED                   |
-| `limit_ahead_red_pct` | How far spending may run ahead of time before a bar is fully red (20 by default) |
+| `limit_ahead_red_pct` | How far spending may run ahead of time before a bar is fully red (10 by default) |
 | `fetch_ttl_sec`       | How often your usage is fetched, in seconds (every minute by default)            |
 
 If the hook cannot use a value, it says so on a `CONFIG` line under the bars and carries on with the
@@ -179,7 +229,8 @@ rest of the file.
 
 ## Requirements
 
-Claude Code, signed in. The hooks run on macOS (Apple Silicon), Linux (x86-64) and Windows (x86-64).
+Claude Code, signed in, and for the panel in VS Code, version 2.1.309 or later of the extension. The
+hooks run on macOS (Apple Silicon), Linux (x86-64) and Windows (x86-64).
 For anything else, such as an Intel Mac or an ARM Linux machine, you can build them yourself —
 [REFERENCE.md](REFERENCE.md#requirements) shows how.
 

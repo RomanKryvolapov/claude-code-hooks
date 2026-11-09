@@ -114,7 +114,7 @@ const sampleMaxAgeMin = 180.0
 
 // --- the picture --------------------------------------------------------------
 const (
-	barCells     = 20  // one cell per 5 %
+	barCells     = 100 // one cell per percent, as the CONTEXT gauge
 	barFilled    = '▓' // every gauge, the context one included
 	barEmpty     = '░'
 	ctxBarCells  = 100    // the context gauge: one cell per percent
@@ -137,13 +137,18 @@ const (
 // into the model's context, where an escape code is noise, and the JSON is read by programs. Setting
 // NO_COLOR (https://no-color.org) to anything turns the paint off there too.
 //
-// A LIMIT or CONTEXT gauge is drawn whole in one colour, a hue turning from green through yellow to
-// red, in 24-bit colour at the saturation and brightness below. What turns it differs:
+// The filled cells of a LIMIT or CONTEXT gauge are drawn in one colour, in 24-bit colour at the
+// brightness below, on a scale of its own, and its empty cells show the colours of that scale still
+// ahead:
 //
-//   - a LIMIT gauge turns with how far the spend runs ahead of the time gauge under it — green while
-//     it is not ahead at all, red once it is limitAheadRed points ahead. That is the reading the two
-//     gauges exist for: spend ahead of the clock will not last to the reset;
-//   - the CONTEXT gauge, which has no clock, turns with how full it is — green empty, red full.
+//   - a LIMIT gauge turns from blue to red with how far the spend runs ahead of the time gauge under
+//     it — blue (limitStartRGB) while it is not ahead at all, evenly through violet and magenta,
+//     fully red once it is limitAheadRed points ahead. That is the reading the two gauges exist for:
+//     spend ahead of the clock will not last to the reset. Its empty cells carry the whole scale,
+//     blue to red, however many are left;
+//   - the CONTEXT gauge, which has no clock, turns with how full it is, its hue going from green
+//     through yellow to red — green empty, red full — and each empty cell is in the colour the gauge
+//     will have once it fills to there.
 const (
 	gaugeHueStart  = 120.0 // green
 	gaugeHueEnd    = 0.0   // red
@@ -153,12 +158,21 @@ const (
 
 // limitAheadRed is how many points a LIMIT gauge's spend runs ahead of the time gauge under it before
 // the gauge is fully red. Override with "limit_ahead_red_pct" in the config.
-var limitAheadRed = 20.0
+var limitAheadRed = 10.0
 
-// A terminal that cannot draw 24-bit colour gets the same scale from the 256-colour palette, green to
-// red in eleven steps. Apple's Terminal is the one still in wide use: it could not draw 24-bit colour
-// for most of its life, and reads the code as other attributes.
-var gaugePalette256 = [11]int{46, 82, 118, 154, 190, 226, 220, 214, 208, 202, 196}
+// limitStartRGB is the colour a LIMIT gauge has while its spend is not ahead of the clock: a plain blue,
+// hue 225 at the saturation and brightness the rest of the scale has. It is named exactly so the gauge
+// can turn smoothly from it to red.
+var limitStartRGB = [3]int{36, 88, 242}
+
+// A terminal that cannot draw 24-bit colour gets the same scales from the 256-colour palette in eleven
+// steps, each the palette's nearest: green to red, and blue to red. Apple's Terminal is the one still
+// in wide use: it could not draw 24-bit colour for most of its life, and reads the code as other
+// attributes.
+var (
+	gaugePalette256 = [11]int{46, 82, 118, 154, 190, 226, 220, 214, 208, 202, 196}
+	limitPalette256 = [11]int{27, 21, 57, 93, 129, 165, 200, 199, 198, 197, 196}
+)
 
 // The figures — the percentages of the limits and of the time gauges under them, the reset times, and
 // the figures of a wait — are one amber; a terminal without 24-bit colour gets the nearest the
@@ -168,21 +182,23 @@ var figuresRGB = [3]int{255, 180, 0}
 
 const figures256 = 214
 
-// The TIME/WORK gauges are cyan, so a limit's two gauges never read alike.
-const colourTime = "36"
+// The TIME/WORK gauges are white, so a limit's two gauges never read alike.
+var timeRGB = [3]int{242, 242, 242}
+
+const time256 = 255
 
 // --- fitting the status line to the terminal ------------------------------------
 //
 // Claude Code tells the status line how wide the terminal is. The limit blocks are laid side by side
 // while they fit and wrapped onto further rows when they do not; a terminal too narrow for even one
-// block at full size gets gauges half as long.
+// block at one cell a percent gets gauges just short enough to fit, down to narrowBarCells.
 
 // statusMarginCols is the part of the terminal the status line does not get: Claude Code draws it
 // inside a margin of its own that the documentation does not size, so this is an allowance, not a
 // measurement.
 const statusMarginCols = 4
 
-// narrowBarCells is the limit gauge on a narrow terminal: one cell per started 10 %.
+// narrowBarCells is as short as a limit's gauge gets on a narrow terminal: one cell per started 10 %.
 const narrowBarCells = 10
 
 // minContextCells is as short as the CONTEXT gauge gets on a narrow terminal.

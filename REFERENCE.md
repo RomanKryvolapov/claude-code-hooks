@@ -8,7 +8,8 @@ with [README.md](README.md); to install it into another project, follow [AGENTS.
 
 **There is no runtime to install** — no Node, no Python, no Go. The hooks are single static binaries,
 committed for macOS on Apple Silicon, Linux on x86-64 and Windows on x86-64, with the Go sources they
-were built from beside them. Everything else is Markdown and JSON.
+were built from beside them. Everything else is Markdown and JSON, and one TypeScript module that
+Claude Code runs itself.
 
 The three groups — the hooks, the rules with their subagent, and the skill — do not need each other.
 Take any one of them and leave the rest. **Inside** the rules, though, the files reference one
@@ -22,6 +23,7 @@ another by name, so they are installed as a set rather than picked one at a time
 | Component                                                                       | Where it lives                             | What it is                                                                                                                         |
 | ------------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
 | [`usage-limits`](#usage-limits--your-subscription-budget-in-front-of-the-model)  | `.claude/hooks/`, `scripts/usage-limits-*` | Live Anthropic subscription usage in the model's context and the status line                                                       |
+| [`usage-limits-panel`](#in-vs-code-the-panel)                                   | `scripts/usage-limits-panel/`              | The `usage-limits` status line drawn above the prompt in the VS Code extension, which shows none                                   |
 | [`work-audit`](#work-audit--an-append-only-record-of-the-session)                | `.claude/hooks/`, `scripts/work-audit-*`   | An append-only log of what actually happened in each session, written mechanically rather than summarised by the model              |
 | [`play-sound`](#play-sound--a-sound-when-it-wants-you-back)                      | `.claude/hooks/`, `scripts/play-sound-*`   | A sound when Claude Code stops, fails, or is waiting on you                                                                        |
 | [The nine rules](#the-rules)                                                     | `.claude/rules/`                           | How the model works: budget, starting, finishing, autonomy, architecture, code quality, merges, answers, searching                  |
@@ -49,6 +51,7 @@ another by name, so they are installed as a set rather than picked one at a time
   README.md                         Claude Code's own commands and settings, for people
 scripts/
   usage-limits-*  work-audit-*  play-sound-*   committed binaries, three platforms each
+  usage-limits-panel/                          the VS Code panel: a plugin, loaded from user settings
   *-src/                                       Go sources and a build script each; tests for the
                                                limits hook only
 management/logs/                    where work-audit writes (this repository ignores it)
@@ -74,6 +77,10 @@ Across the groups there are three ties, and they are the only ones:
 
 Beyond those, the hooks do not need the rules, the rules do not need the hooks, and the skill needs
 nothing at all.
+
+One more tie runs inside the hooks: **`usage-limits-panel` runs the `usage-limits` binary** of the
+project the session is in. It is the status line drawn where there is none, and computes nothing of
+its own; in a project without the binaries it draws nothing.
 
 ---
 
@@ -108,14 +115,18 @@ This hook reads the real numbers from Anthropic's own usage endpoint — which, 
 three places: in the status line, for you; in the model's context, on every prompt, so the model
 can size its own work; and as JSON for scripting.
 
-**What you see** — the status line, with the prompt cache and the tokens of the session and of the
-account beside the `CONTEXT` gauge. [README.md](README.md#reading-the-status-line) shows it in colour;
-here it is as plain text, as it prints with `NO_COLOR` set:
+**What you see** — the status line: the `CONTEXT` gauge with the prompt cache and the tokens of the
+session and of the account beside it, then the 5-hour and the 7-day window. A per-model weekly
+bucket is not drawn: it concerns only sessions on that model, and goes to the model's block alone.
+[README.md](README.md#reading-the-bars) shows it in colour; here it is as plain text, as it
+prints with `NO_COLOR` set on a terminal 254 columns wide:
 
 ```
-CONTEXT  739k/1m   74 %  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░ CACHE 0:59, SESSION: FRESH 2m CACHED 137m, ACCOUNT 5H: FRESH 19m CACHED 1.1b, 7D: FRESH 20m CACHED 1.1b
-5 HOURS   57 % LIMIT ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░ RESET AT 23:49      7 DAYS   16 % LIMIT ▓▓▓▓░░░░░░░░░░░░░░░░ RESET AT MON 17:59          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00
--         64 %  TIME ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░ RESET AFTER 1:49              5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 19:59             5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 19:59
+CONTEXT  739k/1m  74 % ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░ CACHE 0:59  SESSION: FRESH 2m CACHED 137m, ACCOUNT 5H: FRESH 19m CACHED 1.1b, 7D: FRESH 20m CACHED 1.1b
+5 HOURS     57 % LIMIT ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ RESET AT 23:49
+-           64 %  TIME ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ RESET AFTER 1:49
+7 DAYS      16 % LIMIT ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ RESET AT MON 17:59
+-            5 %  WORK ▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 19:59
 ```
 
 **What the model is handed**, and you do not see: the same figures as data, prefixed to its context
@@ -144,8 +155,9 @@ Each limit is a **pair of stacked lines** in the status line, and a pair of figu
 block — `used="58%" gone="70% of the window"` — and the whole point is to read one against the
 other.
 
-**Top line — `LIMIT`:** how much of that budget is spent, as a percentage, a 20-cell gauge, and
-`RESET AT` plus the clock time the limit resets (a weekday appears once the reset is not today).
+**Top line — `LIMIT`:** how much of that budget is spent, as a percentage, a gauge of one cell per
+percent, and `RESET AT` plus the clock time the limit resets (a weekday appears once the reset is not
+today). A terminal too narrow for a hundred cells gets gauges just short enough to fit.
 
 **Bottom line — `TIME` or `WORK`:** how much of the window has already gone, drawn with the same
 gauge, plus `RESET AFTER` — the wait, clock-style (`3:49` under a day, `6 days 17:25` over one).
@@ -193,28 +205,36 @@ Code's own figures instead (below).
 The status line is the one output a person reads, so it gets what the model and the scripts do not
 need:
 
-- **Colour.** Each gauge is drawn whole in one colour, turning smoothly from green through yellow to
-  red. A `LIMIT` gauge turns with how far the spend runs ahead of the `TIME`/`WORK` gauge under it:
-  green while it is not ahead, red once it is 20 points ahead (`limit_ahead_red_pct` in the config)
-  — exactly the reading the two gauges exist for. The `CONTEXT` gauge has no clock, so it turns with
-  how full it is. The colours are 24-bit. Apple's Terminal could not draw 24-bit colour for most of
-  its life, so it gets the same scale in eleven steps of the 256-colour palette. The `CONTEXT`
+- **Colour.** A gauge's filled cells are drawn in one colour, which changes smoothly with its reading;
+  its empty cells show the colours of its scale still ahead. A `LIMIT` gauge turns with how far the
+  spend runs ahead of the `TIME`/`WORK` gauge under it: blue (36, 88, 242) while it is not ahead,
+  behind included, turning evenly through violet and magenta — violet at three points of ten — and
+  fully red once it is 10 points ahead (`limit_ahead_red_pct` in the config) — exactly the reading
+  the two gauges exist for. Its empty cells carry that whole scale, blue on the first to red on the
+  last, however many are left: the colour follows the pace, not how full the gauge is, so
+  no cell has a colour of its own. The `CONTEXT` gauge has no clock, so it turns with how full it is,
+  from green through yellow to red, and that scale is laid along the gauge: each empty cell is in the
+  colour the gauge will have once it fills to there — at half full, yellow through orange to red. The
+  colours are 24-bit. Apple's Terminal could not draw 24-bit colour for most of its
+  life, so it gets the same scales in eleven steps of the 256-colour palette. The `CONTEXT`
   counter and percentage take the `CONTEXT` gauge's colour. The other figures — the percentages of
   the limits and of the time gauges, and the reset times and waits (`MON 18:00`, the `6` and `20:02`
-  of `6 days 20:02`) — are amber (255, 180, 0). The `TIME`/`WORK` gauges are cyan, and the words
+  of `6 days 20:02`) — are amber (255, 180, 0). The `TIME`/`WORK` gauges are white, and the words
   keep the terminal's own colour. Set `NO_COLOR` to any value to turn the colour off. Token counts
   are written with lower-case units everywhere, whole in thousands and millions (`719k/1m`, `137m`)
   and to one decimal in billions when there is one (`1.2b`, `2b`).
-- **The prompt cache and the tokens**, after the `CONTEXT` gauge on the same line:
-  `CACHE 0:59, SESSION: FRESH 2m CACHED 137m, ACCOUNT 5H: FRESH 19m CACHED 1.1b, 7D: FRESH 20m CACHED 1.1b`.
+- **The prompt cache and the tokens**, after the `CONTEXT` gauge on the same line, two spaces apart:
+  `CACHE 0:59  SESSION: FRESH 2m CACHED 137m, ACCOUNT 5H: FRESH 19m CACHED 1.1b, 7D: FRESH 20m CACHED 1.1b`.
+  On a terminal too narrow for the tokens beside a gauge as long as the limits', they take a line of
+  their own under the limits instead, so that no gauge is shortened or pushed out of line for them.
   - `CACHE 0:59` is how long the prompt cache stays warm, as Claude Code reports it. Past that, the
     next request writes the whole context into the cache again, which is the most expensive request a
     long session makes. The time is green with the cache's whole lifetime ahead (an hour, or five
     minutes) and turns red as it runs out; it reads `CACHE COLD`, in red, once that has happened.
   - `SESSION` is this session and its subagents; `ACCOUNT` is every session on this machine, in the
     limits' own windows — `5H` since the 5-hour window opened (left out where there is none), `7D`
-    since the weekly one did — so it reads against the gauges below it. A session on another computer, or on claude.ai, is in the
-    limits but not in these figures.
+    since the weekly one did — so it reads against the gauges below it. A session on another
+    computer, or on claude.ai, is in the limits but not in these figures.
   - `FRESH` is new input, output and cache writes; `CACHED` is what was read back from the prompt
     cache. Every request sends the whole conversation again, and what the cache already holds is
     read back from it, so `CACHED` grows by the size of the context on every request: a session of
@@ -225,13 +245,19 @@ need:
     the usage the API reported for it. The first reading of a week's transcripts is spread over
     several refreshes, and the figures say `SO FAR` until it is done. Claude Code does not write its
     own service requests to a transcript, so these run a few percent below what `/usage` reports.
-- **A layout that fits.** Claude Code passes the terminal's width. The limit blocks stay side by side
-  while they fit and wrap onto further rows when they do not. On a terminal too narrow for one block,
-  the gauges are drawn half as long, and the `CONTEXT` gauge shortens to leave room for the tokens.
+- **A layout that fits.** Claude Code passes the terminal's width. Every gauge is a hundred cells,
+  one a percent, and the columns before the gauges are one table — the labels, then `CONTEXT`'s
+  counter and the limits' percentages right-aligned, then `CONTEXT`'s percentage and the captions —
+  so the `CONTEXT` gauge and the gauges of the limits stacked under it start in one column and are
+  one length. The limit blocks stay side by side while they fit and wrap onto
+  further rows when they do not — at a hundred cells a gauge, a terminal needs some 290 columns for
+  two side by side. On a terminal too narrow for one block the limits' gauges shorten just enough to
+  fit, down to ten cells, and the `CONTEXT` gauge shortens with them.
+- **The account's windows only.** A per-model weekly bucket is not drawn: it concerns only sessions
+  on that model, and the model's block carries it for the model in use.
 - **Claude Code's own figures when the endpoint is silent.** Once it has not answered for two fetch
-  periods, the 5-hour and 7-day rows quietly show the figures Claude Code hands the status line. The
-  per-model buckets, which only the endpoint knows, stay as of its last answer. These stand-ins are
-  never written to the cache the injected block and the JSON read.
+  periods, the 5-hour and 7-day rows quietly show the figures Claude Code hands the status line.
+  These stand-ins are never written to the cache the injected block and the JSON read.
 
 The status line is redrawn every 30 seconds (`refreshInterval` in `settings.json`), so the
 countdowns move while the session is idle. That has a cost: an open session now asks the usage
@@ -244,6 +270,88 @@ has, marked stale. The pause is kept in the usage cache, which every project on 
 and a copy of the hook older than this one rewrites that cache without it — so the pause holds only
 once every project that carries the hook has this version. Raise
 `fetch_ttl_sec` to ask less often.
+
+### In VS Code: the panel
+
+The status line is part of Claude Code's terminal interface, and the chat panel of the VS Code
+extension does not show it. That panel does draw what a plugin draws, among other places in the band
+directly above the prompt box. So `scripts/usage-limits-panel/` is a small plugin that draws the
+status line there: the same figures, words and colours, with every gauge drawn as a bar.
+
+**It is set up once per machine, not per project.** Name the folder in `CLAUDE_CODE_PLUGIN_DIRS` in
+the `env` of `~/.claude/settings.json` — an absolute path into a checkout that stays where it is:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_PLUGIN_DIRS": "D:\\src\\claude-code-hooks\\scripts\\usage-limits-panel"
+  }
+}
+```
+
+Claude Code then loads it into every session on the machine, VS Code's included, and `claude plugin
+list` shows it as `usage-limits-panel@inline`, loaded. Where the variable already names other
+folders, add this one after the platform's path-list separator (`;` on Windows, `:` elsewhere). A
+project's own settings cannot set it — Claude Code reads that variable from the user's settings alone —
+and the plugin runs the binary of whichever project the session is in, so each project needs the
+hook's binaries and nothing more.
+
+The obvious home, a project's `.claude/skills/`, from which Claude Code loads a plugin by itself, does
+not reach VS Code. A plugin there is code from the repository, so Claude Code loads it only in a
+folder whose trust was accepted, looked up under the exact spelling of its path. Trust accepted in a
+terminal is recorded under the terminal's spelling, and on Windows the VS Code extension starts its
+sessions with the drive letter in lower case (`d:\…` where a terminal has `D:\…`): in Claude Code
+2.1.319 the same session loads the plugin from `D:\…` and skips it from `d:\…`. That is why it lives
+in `scripts/`, where nothing loads it unasked.
+
+It is a TypeScript module Claude Code runs itself, and it computes nothing of its own. It builds the
+input a status-line command is handed from what Claude Code hands a plugin, and runs the hook's binary
+in its `panel` mode, which answers with what the status line would say for it, as data (see
+[Modes](#modes)). The plugin lays that out with the extension's own elements: the `CONTEXT` line with
+the cache's time left, each limit's two lines, the config's notes, and last the session's and the
+account's token counts. Where it differs from the status line:
+
+- **The gauges are bars, all of one width.** Each is filled in its colour as far as the status line
+  fills it, and its empty part is the status line's empty cells, a percent of the bar each, in their
+  colours faded to a quarter, as the light-shade cell shows them. They all stand in one column, which
+  takes whatever the band leaves beside the words and figures, so every gauge is as wide as the
+  others and as wide as the panel allows. Their colours are the status line's.
+- **The token counts are a line of their own, last**, under the limits, where the status line writes
+  them beside the cache's time left whenever the terminal has room.
+- **The columns are boxes, not runs of spaces.** The extension draws a plugin's text in its own
+  proportional typeface — version 2.1.319 ignores a plugin's request for a monospaced one — and a
+  picture lined up with spaces falls apart in it. The lines are one table of boxes instead: the
+  labels, the figures and the captions each a column as wide as its widest text, then the gauges, then
+  the resets and the cache's time left, which a panel too narrow for them cuts off at its edge.
+- **Before the first reply the context's fill is estimated.** Nothing has measured it then, and the
+  status line shows no `CONTEXT` line at all. The panel shows what `/context` estimates the context
+  holds — the system prompt, the tools, the memory files — marked `≈`, until a reply's own figure
+  takes its place. Claude Code counts that estimate locally; it costs no request.
+- **The prompt cache is read from the transcript.** Claude Code tells a status line how long the cache
+  stays warm and tells a plugin nothing about it, so the panel takes the newest reply of the main
+  conversation that read or wrote the cache, and the lifetime the newest reply that wrote to it was
+  written with — every reply's usage says how much it wrote for five minutes and how much for an hour.
+  A reply is written down once the model has answered, while the cache's lifetime runs from when the
+  request read it, so the time left reads high by the length of that answer: seconds, against an hour.
+
+**It draws in the band above the prompt, not in a pane.** A pane is a plugin's usual place, but the
+extension docks one beside the conversation whenever its panel is 800 pixels wide or more, and a
+plugin cannot ask otherwise. The band is documented for the terminal and the desktop app alone; the
+extension draws it all the same — versions 2.1.309 and 2.1.319 were checked — and the plugin draws
+there only for VS Code, since a terminal has the status line. It draws nothing in a project without
+the hook's binary, and gives way to a survey, which asks in the same band. The band is drawn again
+after every turn, whenever a limit moves a whole point, and every 30 seconds, as the status line is;
+in between, every redraw reuses one run of the binary. The context's fill is Claude Code's own, as
+the status line's is, and the transcript's where Claude Code has none. A plugin that first loads in
+the middle of a session learns the transcript from the next prompt, so until then the band has no
+token counts or cache. To stop it, take the folder out of `CLAUDE_CODE_PLUGIN_DIRS`, or set
+`"usage-limits-panel@inline": false` under `enabledPlugins` in the same settings file.
+
+It finds the binary as the launcher does — the one for its platform, in `scripts/`,
+`scripts/claude-code/` or `.claude/bin/` — because it cannot run the launcher itself: a plugin starts
+commands without a shell, and on Windows there is no `sh` to hand it to. Where the binary fails, or
+prints what the plugin cannot read — an older binary prints nothing in this mode — the band says so in
+place of the figures.
 
 ### The working week — why the weekly bar is not calendar time
 
@@ -331,7 +439,7 @@ ORANGE; a config that still carries its `gate_enabled` key is told the key is no
 | `zones`                 | see the table   | `session` and `weekly` thresholds for YELLOW / ORANGE / RED  |
 | `fetch_ttl_sec`         | `60`            | How often the usage endpoint is asked, answered or not       |
 | `context_window_tokens` | `1000000`       | The CONTEXT window where Claude Code does not report it      |
-| `limit_ahead_red_pct`   | `20`            | Points ahead of its time gauge at which LIMIT is fully red   |
+| `limit_ahead_red_pct`   | `10`            | Points ahead of its time gauge at which LIMIT is fully red   |
 
 Days are keyed by their English name or three-letter abbreviation, in any case.
 
@@ -359,6 +467,18 @@ it.
 | `--mode inject --event UserPromptSubmit` | the block injected on every prompt          |
 | `--mode json [--model <id>]`             | the full computed state, as JSON            |
 | `--mode statusline`                      | the picture, gauges painted, session tokens |
+| `--mode panel`                           | the same, as data, for the VS Code panel    |
+
+`--mode panel` reads the status line's input and prints, as JSON, what the status line would say for
+it: the `CONTEXT` reading, the cache's time left and the token counts, then each limit — its label,
+percentage, reset time and colour, and the gauge under it with its caption, percentage and the wait
+until the reset — and the config's notes. Every percentage is rounded as the status line prints it,
+every colour is the `#rrggbb` it paints with, and `"limits": null` stands for its `LIMITS -> N/A`.
+Every gauge carries its empty part as `"empty"`: runs of one colour, first to last, out of the status
+line's hundred cells, so the panel's bars are filled and shaded cell for cell as the status line's.
+Where the input carries no prompt-cache reading, it reads one from the transcript. Where nothing has
+measured the context yet, it takes the input's `context_estimate`, which the plugin sends before the
+first reply, and says so with `"estimated": true`; the status line never reads that field.
 
 `--mode json` is the one to script against. It carries `session_pct`, `weekly_pct`, `zone`,
 `limiter`, `burn_window`, `burn_pct_per_min`, `min_to_exhaust`, `horizon_min`, the active model's
@@ -752,6 +872,10 @@ Nothing else in the file needs touching. If a project already has a `settings.js
 entries into it rather than replacing it, and repoint an existing entry rather than adding a second
 one for the same event — both would run.
 
+The VS Code panel is not wired here: a project's settings cannot load it, so it is named in each
+user's own settings instead — see [In VS Code: the panel](#in-vs-code-the-panel) — and it hooks the
+events it needs from inside.
+
 ---
 
 # `.gitattributes` and `.gitignore`
@@ -797,6 +921,15 @@ Each hook has its own script, so rebuilding all of them is the first line three 
 `work-audit-src` and `play-sound-src` in place of `usage-limits-src`. Only the limits script takes an
 output directory; the other two always write next to the sources, into `scripts/`.
 
+The VS Code panel has nothing to build: its source, `scripts/usage-limits-panel/hooks/register.tsx`,
+is what Claude Code runs. Two commands check it — the first reads it the way Claude Code will, the
+second runs its tests:
+
+```sh
+claude plugin validate scripts/usage-limits-panel
+claude plugin test scripts/usage-limits-panel
+```
+
 All three build with `-trimpath`, so no local path is baked into a binary. The limits hook adds
 `-buildvcs=false` on top, which makes it reproducible byte for byte: the same source gives the same
 bytes in any checkout, so a committed binary can be verified against its source. The other two leave
@@ -823,6 +956,11 @@ cp -r scripts/usage-limits-* scripts/work-audit-* scripts/play-sound-* <project>
 
 All three hooks must be copied together with all three sets of binaries. A launcher whose binary is
 missing exits 0 in silence — that is right for a hook and means the omission never announces itself.
+
+The panel for VS Code is not copied per project: it is set up once per machine, in the user's own
+settings, as [In VS Code: the panel](#in-vs-code-the-panel) shows, and each project needs only the
+binaries. The `scripts/usage-limits-*` above carries its folder along, which does no harm: nothing
+loads it from there.
 
 The rules, the subagent and the skill are separate and optional — and worth choosing deliberately,
 since the rules change how the model behaves from the next session onwards. Copy the rules together
@@ -856,7 +994,8 @@ two lines, or a Windows checkout will turn the shebang into CRLF and break them 
 # Requirements
 
 Claude Code, signed in (`claude login`). Nothing else — the rules, the subagent and the skill need
-nothing at all, and the hooks need no runtime.
+nothing at all, and the hooks need no runtime. The VS Code panel needs an extension that draws a
+plugin's band above the prompt: versions 2.1.309 and 2.1.319 were checked.
 
 Binaries are committed for **darwin/arm64**, **linux/amd64** and **windows/amd64**. The launchers
 pick one by `uname` and do not check the architecture, so on a platform outside that list — an Intel

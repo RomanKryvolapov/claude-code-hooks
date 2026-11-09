@@ -16,13 +16,14 @@
 // (~/.claude, or CLAUDE_CONFIG_DIR) on Linux and Windows, the login Keychain on
 // macOS. See readAccessToken.
 //
-// The status line draws a picture for a person. Three lines: CONTEXT (how full this session's
-// context window is, one gauge cell per percent), then the limits side by side (the 5-hour window
-// where there is one, the 7-day window, then each per-model weekly bucket) as LIMIT (budget
-// spent) over the share of the window gone — comparing the two says whether the spend is ahead of the clock. That second gauge
-// is calendar time on the 5-hour row (captioned TIME) and working time on the weekly rows
-// (captioned WORK), weighted per weekday; see workingWeek. It is coloured, fitted to the
-// terminal, and carries the prompt cache and token counts beside CONTEXT; see statusline.go.
+// The status line draws a picture for a person: CONTEXT (how full this session's context window
+// is), then the account's windows (the 5-hour one where there is one, and the 7-day one) as LIMIT
+// (budget spent) over the share of the window gone — comparing the two says whether the spend is
+// ahead of the clock — and last the token counts. Every gauge is one cell per percent. That second
+// gauge is calendar time on the 5-hour row (captioned TIME) and working time on the weekly row
+// (captioned WORK), weighted per weekday; see workingWeek. It is coloured, fitted to the terminal,
+// and carries the prompt cache beside CONTEXT; see statusline.go. A model's weekly bucket of its own
+// is in the model's block alone.
 //
 // The model is handed the same figures as data — XML, with no gauge; see modelblock.go — plus the
 // token counts and the elements it acts on: burn, zone, and the model at session start.
@@ -32,6 +33,8 @@
 //   --mode inject --event UserPromptSubmit  <usage_limits> block                -> model context
 //   --mode json [--model <id>]              full computed state as JSON
 //   --mode statusline                       the picture, painted, with cache and token counts
+//   --mode panel                            the picture's figures and colours as JSON, for the
+//                                           usage-limits-panel plugin; see panel.go
 //
 // Never breaks the session: on any error it exits 0 — the injection mode stays
 // silent, statusline and JSON print a short unavailable marker. Any other mode,
@@ -1007,22 +1010,22 @@ func formatWait(m float64) string {
 // usageBar draws a percentage as a fixed-width gauge, so "how full is it" reads without arithmetic.
 func usageBar(pct float64) string { return barOf(pct, barCells) }
 
-// barOf draws a percentage as a gauge of `cells` cells and fills one cell per *started* slice of it —
-// with the usual 20 cells that is one cell per started 5 %, so the gauge never reads empty while
-// something has already been spent. Computed from the same rounded percentage the row prints, so the
-// bar and the number can never disagree.
+// barOf draws a percentage as a gauge of `cells` cells, filledCells of them filled.
 func barOf(pct float64, cells int) string {
 	if cells <= 0 {
 		return ""
 	}
-	filled := int(math.Ceil(math.Round(pct) * float64(cells) / 100))
-	if filled < 0 {
-		filled = 0
-	}
-	if filled > cells {
-		filled = cells
-	}
+	filled := filledCells(pct, cells)
 	return strings.Repeat(string(barFilled), filled) + strings.Repeat(string(barEmpty), cells-filled)
+}
+
+// filledCells is how many cells of a gauge of `cells` a percentage fills: one per *started* slice of it
+// — one cell a percent at the usual hundred; a gauge shortened for a narrow terminal still never reads
+// empty while something has already been spent. Computed from the same rounded percentage the row
+// prints, so the bar and the number can never disagree.
+func filledCells(pct float64, cells int) int {
+	filled := int(math.Ceil(math.Round(pct) * float64(cells) / 100))
+	return max(0, min(filled, cells))
 }
 
 // contextTokens is how much context the session is holding right now: the tokens the last
@@ -1034,34 +1037,7 @@ func barOf(pct float64, cells int) string {
 // Reports false until the session's first reply is on disk — on the very first prompt of a session
 // there is no usage entry yet, so the CONTEXT line is simply absent rather than showing a zero.
 func contextTokens(transcriptPath string) (float64, bool) {
-	if transcriptPath == "" {
-		return 0, false
-	}
-	f, err := os.Open(transcriptPath)
-	if err != nil {
-		return 0, false
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return 0, false
-	}
-	const tailBytes = int64(2 << 20)
-	start := int64(0)
-	if fi.Size() > tailBytes {
-		start = fi.Size() - tailBytes
-	}
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
-		return 0, false
-	}
-	b, err := io.ReadAll(f)
-	if err != nil {
-		return 0, false
-	}
-	lines := strings.Split(string(b), "\n")
-	if start > 0 && len(lines) > 1 {
-		lines = lines[1:] // the first line of the tail is cut in half
-	}
+	lines := transcriptTail(transcriptPath)
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" || !strings.Contains(line, `"usage"`) {
@@ -1084,6 +1060,41 @@ func contextTokens(transcriptPath string) (float64, bool) {
 		return u.Input + u.Create + u.Read, true
 	}
 	return 0, false
+}
+
+// transcriptTail is the last two megabytes of a transcript, as whole lines: what is read from it here
+// is the newest replies, and a transcript is append-only and can run to many megabytes. Nil when there
+// is no transcript or it cannot be read.
+func transcriptTail(transcriptPath string) []string {
+	if transcriptPath == "" {
+		return nil
+	}
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	const tailBytes = int64(2 << 20)
+	start := int64(0)
+	if fi.Size() > tailBytes {
+		start = fi.Size() - tailBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(b), "\n")
+	if start > 0 && len(lines) > 1 {
+		lines = lines[1:] // the first line of the tail is cut in half
+	}
+	return lines
 }
 
 // shortTokens prints a token count the way the counter reads best: 510k, 2m, 648m, 29.9b. Thousands
@@ -1119,7 +1130,7 @@ type statusRow struct {
 	// itself is the "RESET AFTER" cell on the TIME line below, and labelling this one "RESET IN"
 	// made the two read as contradicting each other.
 	reset string
-	// windowBar / windowPct are the second gauge: the same 20 cells and the same number, but for how
+	// windowBar / windowPct are the second gauge: the same cells and the same number, but for how
 	// much of the window has already run out. Drawn under the usage gauge so the two can be compared.
 	windowBar string
 	windowPct float64
@@ -1196,9 +1207,25 @@ type contextReading struct {
 type renderOpts struct {
 	p     painter
 	width int // columns available; zero when unknown, and then nothing is fitted
-	// contextTail is written after the CONTEXT gauge, on the same line: the status line puts the
-	// session's token count there.
+	// contextTail is written after the CONTEXT gauge, on the same line: the status line puts how long
+	// the prompt cache stays warm there.
 	contextTail string
+	// tokens follow contextTail two spaces on, where the line has room for them beside a CONTEXT gauge
+	// as long as the limits'; where it has not, they take a line of their own under the limits, so
+	// that no gauge is shortened or pushed out of line for them. The status line puts the session's
+	// and the account's token counts there.
+	tokens string
+}
+
+// withTokens is the CONTEXT line's tail with the token counts after it, two spaces on.
+func (o renderOpts) withTokens() string {
+	switch {
+	case o.tokens == "":
+		return o.contextTail
+	case o.contextTail == "":
+		return o.tokens
+	}
+	return o.contextTail + "  " + o.tokens
 }
 
 // limitBlock is one limit drawn as its two stacked lines. bottom starts after the label's columns,
@@ -1209,15 +1236,16 @@ type limitBlock struct {
 	width       int
 }
 
-// limitBlocks draws every limit with gauges of the given length.
-func limitBlocks(rows []statusRow, cells int, p painter) []limitBlock {
+// limitBlocks draws every limit with gauges of the given length, its columns as wide as heads says, so
+// the gauges of blocks stacked one under another, and the CONTEXT gauge above them, start in one
+// column.
+func limitBlocks(rows []statusRow, cells int, h heads, p painter) []limitBlock {
 	blocks := make([]limitBlock, 0, len(rows))
 	for _, r := range rows {
-		// The LIMIT gauge's colour is how far the spend runs ahead of the time gauge under it. A limit
-		// the API gave no reset for has no time gauge and is measured as if no time had passed, so a
-		// nearly spent one still reads red.
-		top := r.label + cellGap + p.paint(pctCell(r.pct), p.figuresColour()) + " " + captionCell("LIMIT") + " " +
-			p.paint(barOf(r.pct, cells), p.gaugeColour((r.pct-r.windowPct)/limitAheadRed))
+		label := padRunes(r.label, h.label)
+		top := label + cellGap + padLeftRunes(p.paint(pctCell(r.pct), p.figuresColour()), h.figure) + " " +
+			captionCell("LIMIT") + " " + p.gauge(r.pct, cells, p.limitColour(r.paceAt()),
+			func(c, first, n int) string { return p.limitColour(limitShade(c, first, n)) })
 		bottom := cellGap
 		// windowBar is only a presence mark here: it was drawn at the default length, and the gauge
 		// is drawn again from its percentage at whatever length this layout needs.
@@ -1226,8 +1254,8 @@ func limitBlocks(rows []statusRow, cells int, p painter) []limitBlock {
 			if caption == "" {
 				caption = captionCalendar
 			}
-			bottom += p.paint(pctCell(r.windowPct), p.figuresColour()) + " " + captionCell(caption) + " " +
-				p.paint(barOf(r.windowPct, cells), colourTime)
+			bottom += padLeftRunes(p.paint(pctCell(r.windowPct), p.figuresColour()), h.figure) + " " +
+				captionCell(caption) + " " + p.paint(barOf(r.windowPct, cells), p.timeColour())
 		}
 		if r.reset != "" {
 			top += " RESET AT " + p.paint(r.reset, p.figuresColour())
@@ -1235,7 +1263,7 @@ func limitBlocks(rows []statusRow, cells int, p painter) []limitBlock {
 				bottom += " RESET AFTER " + paintFigures(p, r.after)
 			}
 		}
-		lw := runeWidth(r.label)
+		lw := runeWidth(label)
 		blocks = append(blocks, limitBlock{top: top, bottom: bottom, labelWidth: lw,
 			width: max(runeWidth(top), lw+runeWidth(bottom))})
 	}
@@ -1272,20 +1300,32 @@ func packBlocks(blocks []limitBlock, width int) [][]limitBlock {
 // budget is running out faster than the clock, i.e. it will not last to the reset.
 //
 // Given a width, the blocks wrap onto further rows rather than off the edge, and a terminal too
-// narrow for one block at full size gets gauges half as long.
+// narrow for one block at one cell a percent gets gauges just short enough to fit, as the CONTEXT
+// gauge does.
 func renderLimits(rows []statusRow, ctx contextReading, o renderOpts) string {
-	blocks := limitBlocks(rows, barCells, o.p)
+	h := headsFor(rows, ctx)
+	cells := barCells
+	blocks := limitBlocks(rows, cells, h, o.p)
 	widest := 0
 	for _, b := range blocks {
 		widest = max(widest, b.width)
 	}
 	if o.width > 0 && widest > o.width {
-		blocks = limitBlocks(rows, narrowBarCells, o.p)
+		cells = max(barCells-(widest-o.width), narrowBarCells)
+		blocks = limitBlocks(rows, cells, h, o.p)
 	}
 
-	lines := make([]string, 0, 3)
-	if top := topLine(ctx, o); top != "" {
-		lines = append(lines, top)
+	lines := make([]string, 0, 4)
+	// The CONTEXT gauge as long as the limits' and starting in their column, so the lines read as one
+	// table; the token counts beside it while they fit, under the limits where they do not.
+	top, under := o, ""
+	top.contextTail = o.withTokens()
+	if ctx.ok && ctx.window > 0 && o.width > 0 && o.tokens != "" &&
+		headsWidth(h)+cells+runeWidth(" "+top.contextTail) > o.width {
+		top.contextTail, under = o.contextTail, o.tokens
+	}
+	if line := topLine(ctx, top, h, cells); line != "" {
+		lines = append(lines, line)
 	}
 	for _, group := range packBlocks(blocks, o.width) {
 		tops := make([]string, 0, len(group))
@@ -1307,40 +1347,143 @@ func renderLimits(rows []statusRow, ctx contextReading, o renderOpts) string {
 			strings.TrimRight(statusIndent+strings.Join(bottoms, blockGap), " "),
 		)
 	}
+	if under != "" {
+		lines = append(lines, under)
+	}
 	return strings.Join(lines, "\n")
 }
 
+// headsWidth is how many columns stand before every gauge: the label, the figures and the column of
+// CONTEXT's percentage and the captions, with the gaps between them and before the gauge.
+func headsWidth(h heads) int {
+	return h.label + runeWidth(cellGap) + h.figure + 1 + runeWidth(pctCell(0)) + 1
+}
+
+// paceAt places a LIMIT gauge on its colour scale: by how far the spend runs ahead of the time gauge
+// under it, red once it is limitAheadRed points ahead. Both are rounded as the row prints them, so the
+// colour follows the figures a person reads: "17 %" over "7 %" is fully red. A limit the API gave no
+// reset for has no time gauge and is measured as if no time had passed, so a nearly spent one still
+// reads red.
+func (r statusRow) paceAt() float64 {
+	return (math.Round(r.pct) - math.Round(r.windowPct)) / limitAheadRed
+}
+
+// gauge draws a reading of pct percent as a gauge of `cells` cells, as barOf does, and paints it: its
+// filled cells in the colour the reading gives, its empty ones each in the colour colourOf gives it —
+// which is how the empty part shows the colours of the gauge's scale still ahead (contextShade,
+// limitShade).
+func (p painter) gauge(pct float64, cells int, filled string, colourOf func(cell, firstEmpty, cells int) string) string {
+	n := filledCells(pct, cells)
+	out := p.paint(strings.Repeat(string(barFilled), n), filled)
+	for _, r := range emptyRuns(n, cells, colourOf) {
+		out += p.paint(strings.Repeat(string(barEmpty), r.Cells), r.Colour)
+	}
+	return out
+}
+
+// colourRun is a stretch of a gauge's empty cells in one colour: an SGR code in the status line, a hex
+// colour in the panel's picture.
+type colourRun struct {
+	Colour string `json:"colour"`
+	Cells  int    `json:"cells"`
+}
+
+// emptyRuns is the empty part of a gauge with `filled` of its `cells` cells filled, first cell to last,
+// as runs of one colour: colourOf gives each cell's, told the cell's place, where the empty part starts
+// and how many cells the gauge has. Neighbours of one colour make one run, so a terminal on the
+// 256-colour palette gets a code per step of it rather than one per cell.
+func emptyRuns(filled, cells int, colourOf func(cell, firstEmpty, cells int) string) []colourRun {
+	runs := []colourRun{}
+	for i := filled; i < cells; i++ {
+		c := colourOf(i, filled, cells)
+		if n := len(runs); n > 0 && runs[n-1].Colour == c {
+			runs[n-1].Cells++
+			continue
+		}
+		runs = append(runs, colourRun{Colour: c, Cells: 1})
+	}
+	return runs
+}
+
+// contextShade places CONTEXT's empty cells on its scale by where they stand on the gauge: the scale
+// runs green to red along it, so each empty cell is in the colour the gauge will have once it fills to
+// there — at half full, the empty half runs from yellow through orange to red.
+func contextShade(cell, _, cells int) float64 { return float64(cell+1) / float64(cells) }
+
+// limitShade spreads a LIMIT's whole scale over its empty cells, blue on the first to red on the last,
+// however many are left: a LIMIT's colour follows its pace, not how full it is, so no cell of it has a
+// colour of its own to show.
+func limitShade(cell, firstEmpty, cells int) float64 {
+	if cells-firstEmpty < 2 {
+		return 0
+	}
+	return float64(cell-firstEmpty) / float64(cells-firstEmpty-1)
+}
+
+// pct is how full the context window is, in percent, at most a hundred: a request can carry more
+// than the window the configured size guessed at.
+func (c contextReading) pct() float64 { return math.Min(c.tokens/c.window*100, 100) }
+
 // contextLine draws the CONTEXT gauge: one cell per percent, so it reads straight as the number
 // beside it — unless the terminal is too narrow for a hundred cells, when it shortens to fit.
-func contextLine(ctx contextReading, o renderOpts) string {
-	pct := ctx.tokens / ctx.window * 100
-	if pct > 100 {
-		pct = 100
-	}
+func contextLine(ctx contextReading, o renderOpts, h heads, cells int) string {
+	pct := ctx.pct()
 	// The counter and the percentage are in the gauge's own colour, so the line reads as one.
 	colour := o.p.gaugeColour(pct / 100)
-	head := statusIndent + "CONTEXT" + cellGap + o.p.paint(shortTokens(ctx.tokens)+"/"+shortTokens(ctx.window), colour) +
-		cellGap + o.p.paint(pctCell(pct), colour) + cellGap
+	head := statusIndent + padRunes(contextLabel, h.label) + cellGap + padLeftRunes(o.p.paint(ctx.counter(), colour), h.figure) +
+		" " + o.p.paint(pctCell(pct), colour) + " "
 	tail := ""
 	if o.contextTail != "" {
 		tail = " " + o.contextTail
 	}
-	cells := ctxBarCells
 	if o.width > 0 {
 		if room := o.width - runeWidth(head) - runeWidth(tail); room < cells {
 			cells = max(room, minContextCells)
 		}
 	}
-	return head + o.p.paint(barOf(pct, cells), colour) + tail
+	return head + o.p.gauge(pct, cells, colour, func(c, first, n int) string { return o.p.gaugeColour(contextShade(c, first, n)) }) + tail
 }
 
-// topLine is the line above the limits: the CONTEXT gauge with whatever the status line writes after
-// it, that alone while there is no context reading yet, or nothing.
-func topLine(ctx contextReading, o renderOpts) string {
+// topLine is the line above the limits: the CONTEXT gauge, its columns and length as the limits'
+// under it are, with whatever the status line writes after it; that alone while there is no context
+// reading yet, or nothing.
+func topLine(ctx contextReading, o renderOpts, h heads, cells int) string {
 	if ctx.ok && ctx.window > 0 {
-		return contextLine(ctx, o)
+		return contextLine(ctx, o, h, cells)
 	}
 	return o.contextTail
+}
+
+// contextLabel names the CONTEXT line.
+const contextLabel = "CONTEXT"
+
+// counter is what the last request carried, of the window: "580k/1m".
+func (c contextReading) counter() string { return shortTokens(c.tokens) + "/" + shortTokens(c.window) }
+
+// heads is how wide the columns before the gauges are, the same on every line so that every gauge
+// starts in one column: the labels, then the figures — CONTEXT's counter, or a limit's percentage —
+// then a column as wide as a percentage, which holds CONTEXT's and the captions LIMIT, TIME and WORK.
+type heads struct{ label, figure int }
+
+// headsFor fits the columns to the CONTEXT line, where there is a reading, and to every limit.
+func headsFor(rows []statusRow, ctx contextReading) heads {
+	h := heads{figure: runeWidth(pctCell(0))}
+	if ctx.ok && ctx.window > 0 {
+		h.label = runeWidth(contextLabel)
+		h.figure = max(h.figure, runeWidth(ctx.counter()))
+	}
+	for _, r := range rows {
+		h.label = max(h.label, runeWidth(r.label))
+	}
+	return h
+}
+
+// padLeftRunes right-aligns s in a field of the given width; its colour codes take no column.
+func padLeftRunes(s string, width int) string {
+	if w := runeWidth(s); w < width {
+		return strings.Repeat(" ", width-w) + s
+	}
+	return s
 }
 
 // gaugeColour is the colour at a point of the green-to-red scale, from 0 (green) to 1 (red); see
@@ -1350,8 +1493,51 @@ func (p painter) gaugeColour(at float64) string {
 	if !p.rgb {
 		return "38;5;" + strconv.Itoa(gaugePalette256[int(math.Round(at*10))])
 	}
+	return rgbCode(gaugeRGB(at))
+}
+
+// gaugeRGB is the colour at a point of the green-to-red scale in 24-bit colour; see gaugeColour.
+func gaugeRGB(at float64) [3]int {
+	at = math.Max(0, math.Min(1, at))
 	r, g, b := hsvToRGB(gaugeHueStart+(gaugeHueEnd-gaugeHueStart)*at, gaugeSaturated, gaugeBright)
-	return "38;2;" + strconv.Itoa(r) + ";" + strconv.Itoa(g) + ";" + strconv.Itoa(b)
+	return [3]int{r, g, b}
+}
+
+// limitColour is the colour of a LIMIT gauge at a point of the blue-to-red scale, from 0 (blue) to 1
+// (red); see paceAt for what places a gauge on it.
+func (p painter) limitColour(at float64) string {
+	at = math.Max(0, math.Min(1, at))
+	if !p.rgb {
+		return "38;5;" + strconv.Itoa(limitPalette256[int(math.Round(at*10))])
+	}
+	return rgbCode(limitRGB(at))
+}
+
+// limitRGB is the colour at a point of the blue-to-red scale in 24-bit colour: from limitStartRGB at 0
+// to the gauges' red at 1, its hue turning the long way round, through violet and magenta, so that it
+// never passes the green and yellow that mean a full CONTEXT is still far off. It moves along that way
+// evenly with the lead: violet at three points of ten, magenta past five.
+func limitRGB(at float64) [3]int {
+	at = math.Max(0, math.Min(1, at))
+	h, s, v := rgbToHSV(limitStartRGB)
+	h += (360 + gaugeHueEnd - h) * at
+	s += (gaugeSaturated - s) * at
+	v += (gaugeBright - v) * at
+	r, g, b := hsvToRGB(math.Mod(h, 360), s, v)
+	return [3]int{r, g, b}
+}
+
+// timeColour is the colour of the TIME/WORK gauges; see timeRGB.
+func (p painter) timeColour() string {
+	if !p.rgb {
+		return "38;5;" + strconv.Itoa(time256)
+	}
+	return rgbCode(timeRGB)
+}
+
+// rgbCode is the SGR code that paints in a 24-bit colour.
+func rgbCode(rgb [3]int) string {
+	return "38;2;" + strconv.Itoa(rgb[0]) + ";" + strconv.Itoa(rgb[1]) + ";" + strconv.Itoa(rgb[2])
 }
 
 // paintFigures paints the figures of a wait like "6 days 20:02" and leaves its words alone.
@@ -1370,11 +1556,11 @@ func (p painter) figuresColour() string {
 	if !p.rgb {
 		return "38;5;" + strconv.Itoa(figures256)
 	}
-	return "38;2;" + strconv.Itoa(figuresRGB[0]) + ";" + strconv.Itoa(figuresRGB[1]) + ";" + strconv.Itoa(figuresRGB[2])
+	return rgbCode(figuresRGB)
 }
 
-// hsvToRGB converts a hue in degrees, from red at 0 through green at 120, with a saturation and a
-// brightness from 0 to 1, into 8-bit red, green and blue.
+// hsvToRGB converts a hue in degrees, from red at 0 through green at 120 and blue at 240 to below 360,
+// with a saturation and a brightness from 0 to 1, into 8-bit red, green and blue.
 func hsvToRGB(h, s, v float64) (int, int, int) {
 	c := v * s
 	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
@@ -1384,12 +1570,38 @@ func hsvToRGB(h, s, v float64) (int, int, int) {
 		r, g = c, x
 	case h < 120:
 		r, g = x, c
-	default:
+	case h < 180:
 		g, b = c, x
+	case h < 240:
+		g, b = x, c
+	case h < 300:
+		r, b = x, c
+	default:
+		r, b = c, x
 	}
 	m := v - c
 	to8 := func(f float64) int { return int(math.Round((f + m) * 255)) }
 	return to8(r), to8(g), to8(b)
+}
+
+// rgbToHSV is hsvToRGB's inverse: a hue in degrees from 0 to below 360, a saturation and a brightness.
+func rgbToHSV(rgb [3]int) (h, s, v float64) {
+	r, g, b := float64(rgb[0])/255, float64(rgb[1])/255, float64(rgb[2])/255
+	hi, lo := math.Max(r, math.Max(g, b)), math.Min(r, math.Min(g, b))
+	if v = hi; hi > 0 {
+		s = (hi - lo) / hi
+	}
+	switch d := hi - lo; {
+	case d == 0:
+		h = 0
+	case hi == r:
+		h = math.Mod(60*(g-b)/d+360, 360)
+	case hi == g:
+		h = 60*(b-r)/d + 120
+	default:
+		h = 60*(r-g)/d + 240
+	}
+	return h, s, v
 }
 
 // renderTextRows prints the BURN / MODEL / ZONE lines under the limits, one per line.
@@ -1742,17 +1954,38 @@ func weeklyWindowGauge(reset, now time.Time) (string, float64) {
 	return usageBar(pct), pct
 }
 
-// limitRows builds one table row per limit the API reports: the session window where there is one,
-// the weekly window, then every per-model weekly bucket — whether or not it belongs to the model in
+// limitRows builds one row per limit the API reports, for the model's block: the account's windows
+// (see windowRows), then every per-model weekly bucket — whether or not it belongs to the model in
 // use.
 func limitRows(st *state) []statusRow {
 	now := time.Now()
-	// The weekly gauges alone move to the working-time scale; the session window is five hours of one
-	// day and weighting it would say nothing.
-	weeklyCaption := ""
-	if !workingScaleIsCalendar() {
-		weeklyCaption = captionWorking
+	rows := windowRows(st, now)
+	for _, sc := range st.scoped {
+		row := statusRow{label: strings.ToUpper(sc.Model), limit: sc.Model + " weekly bucket", pct: sc.Percent}
+		if t, ok := parseTime(sc.ResetsAt); ok {
+			row.reset, row.after = resetCells(&t, t.Sub(now).Minutes(), true)
+			row.windowBar, row.windowPct = weeklyWindowGauge(t, now)
+			row.windowCaption = weeklyCaption()
+		}
+		rows = append(rows, row)
 	}
+	return rows
+}
+
+// weeklyCaption names the gauge under a weekly limit. The weekly gauges alone move to the
+// working-time scale; the session window is five hours of one day and weighting it would say nothing.
+func weeklyCaption() string {
+	if workingScaleIsCalendar() {
+		return ""
+	}
+	return captionWorking
+}
+
+// windowRows is the account's own windows: the 5-hour one where the API reports it, then the 7-day
+// one. They are all the status line and the panel draw: a model's weekly bucket of its own is left to
+// the model's block, which weighs it for the model in use, while on the person's screen it was one more
+// pair of gauges, for a model the session mostly does not run.
+func windowRows(st *state, now time.Time) []statusRow {
 	var rows []statusRow
 	// The 5-hour row only where the API reports the window: a plan without one gets no row rather
 	// than a 0% nobody measured. A window that has not started yet has no reset to draw.
@@ -1769,20 +2002,9 @@ func limitRows(st *state) []statusRow {
 	if !st.r7Local.IsZero() {
 		weekly.reset, weekly.after = resetCells(&st.r7Local, st.minToReset7, true)
 		weekly.windowBar, weekly.windowPct = weeklyWindowGauge(st.r7Local, now)
-		weekly.windowCaption = weeklyCaption
+		weekly.windowCaption = weeklyCaption()
 	}
-	rows = append(rows, weekly)
-
-	for _, sc := range st.scoped {
-		row := statusRow{label: strings.ToUpper(sc.Model), limit: sc.Model + " weekly bucket", pct: sc.Percent}
-		if t, ok := parseTime(sc.ResetsAt); ok {
-			row.reset, row.after = resetCells(&t, t.Sub(now).Minutes(), true)
-			row.windowBar, row.windowPct = weeklyWindowGauge(t, now)
-			row.windowCaption = weeklyCaption
-		}
-		rows = append(rows, row)
-	}
-	return rows
+	return append(rows, weekly)
 }
 
 // sortedKeys is the order every part of the config is read in. Ranging a Go map is unordered, and
@@ -1854,15 +2076,15 @@ func run() {
 
 	var hookInput map[string]any
 	rawInput := ""
-	if mode == "inject" || mode == "statusline" {
+	if mode == "inject" || mode == "statusline" || mode == "panel" {
 		if rawInput = readStdin(); rawInput != "" {
 			_ = json.Unmarshal([]byte(rawInput), &hookInput)
 		}
 	}
-	// Claude Code hands the status line its model; every other mode works it out, which can mean
-	// reading the whole transcript.
+	// The status line and the panel are handed the model; every other mode works it out, which can
+	// mean reading the whole transcript.
 	activeModel := ""
-	if mode != "statusline" {
+	if mode != "statusline" && mode != "panel" {
 		activeModel = getActiveModel(args, hookInput)
 	}
 
@@ -2018,6 +2240,9 @@ func run() {
 
 	case "statusline":
 		fmt.Print(renderStatusline(args, rawInput, hookInput, time.Now()))
+
+	case "panel":
+		fmt.Print(renderPanel(args, rawInput, hookInput, time.Now()))
 
 	}
 }

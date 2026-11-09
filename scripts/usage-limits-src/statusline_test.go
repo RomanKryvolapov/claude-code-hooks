@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -26,11 +28,26 @@ func TestPlainPicture(t *testing.T) {
 		{label: "FABLE", pct: 0, reset: "MON 18:00", windowBar: usageBar(5), windowPct: 5, windowCaption: "WORK", after: "6 days 21:27"},
 		{label: "OPUS", pct: 61},
 	}
-	want := "CONTEXT  168k/1m   17 %  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n5 HOURS   48 % LIMIT ▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░ RESET AT 23:49      7 DAYS   13 % LIMIT ▓▓▓░░░░░░░░░░░░░░░░░ RESET AT MON 17:59          FABLE    0 % LIMIT ░░░░░░░░░░░░░░░░░░░░ RESET AT MON 18:00          OPUS   61 % LIMIT ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░\n-         34 %  TIME ▓▓▓▓▓▓▓░░░░░░░░░░░░░ RESET AFTER 3:17              5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27             5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27"
+	// Every gauge is a hundred cells, one a percent, and the columns before them are one table: the
+	// labels as wide as the widest, CONTEXT's counter and the limits' percentages right-aligned in one
+	// column, CONTEXT's percentage and the captions in the next. So every gauge starts in one column,
+	// CONTEXT's too.
+	bar := func(filled int) string { return strings.Repeat("▓", filled) + strings.Repeat("░", 100-filled) }
+	sp := func(n int) string { return strings.Repeat(" ", n) }
+	tops := "5 HOURS     48 % LIMIT " + bar(48) + " RESET AT 23:49" + sp(6) +
+		"7 DAYS      13 % LIMIT " + bar(13) + " RESET AT MON 17:59" + sp(10) +
+		"FABLE        0 % LIMIT " + bar(0) + " RESET AT MON 18:00" + sp(10) +
+		"OPUS        61 % LIMIT " + bar(61)
+	week := "      5 %  WORK " + bar(5) + " RESET AFTER 6 days 21:27"
+	bottoms := "-           34 %  TIME " + bar(34) + " RESET AFTER 3:17" + sp(11) + week + sp(11) + week
+	want := "CONTEXT  168k/1m  17 % " + bar(17) + "\n" + tops + "\n" + bottoms
 	if got := renderLimits(rows, contextReading{tokens: 168000, window: 1e6, ok: true}, renderOpts{}); got != want {
 		t.Errorf("injected picture changed:\n got %q\nwant %q", got, want)
 	}
-	want = "5 HOURS   48 % LIMIT ▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░ RESET AT 23:49      7 DAYS   13 % LIMIT ▓▓▓░░░░░░░░░░░░░░░░░ RESET AT MON 17:59\n-         34 %  TIME ▓▓▓▓▓▓▓░░░░░░░░░░░░░ RESET AFTER 3:17              5 %  WORK ▓░░░░░░░░░░░░░░░░░░░ RESET AFTER 6 days 21:27"
+	// Without a CONTEXT line the figures' column is a percentage's width.
+	week = "    5 %  WORK " + bar(5) + " RESET AFTER 6 days 21:27"
+	want = "5 HOURS   48 % LIMIT " + bar(48) + " RESET AT 23:49" + sp(6) + "7 DAYS    13 % LIMIT " + bar(13) + " RESET AT MON 17:59\n" +
+		"-         34 %  TIME " + bar(34) + " RESET AFTER 3:17" + sp(11) + week
 	if got := renderLimits(rows[:2], contextReading{}, renderOpts{}); got != want {
 		t.Errorf("injected picture without context changed:\n got %q\nwant %q", got, want)
 	}
@@ -179,26 +196,30 @@ func sampleRows() []statusRow {
 	}
 }
 
-// Each gauge is painted whole in one colour: a LIMIT gauge by how far its spend runs ahead of the
-// time gauge under it, the CONTEXT gauge — its figures with it — by how full it is. The limits'
-// percentages are a soft yellow, the TIME/WORK gauges cyan, and every word keeps the terminal's
-// colour.
-func TestGaugesArePaintedWhole(t *testing.T) {
+// A gauge's filled cells are painted in the colour of its reading, and its empty ones show the colours of
+// its scale still ahead. A LIMIT gauge's filled part runs blue to red by how far its spend is ahead of
+// the time gauge under it, and its empty part is that whole scale, blue on its first cell to red on its
+// last, however many are left. The CONTEXT gauge's filled part — its figures with it — runs green to red
+// by how full it is, and each of its empty cells is in the colour the gauge will have once it fills to
+// there. The TIME/WORK gauges are white throughout, the limits' percentages a soft yellow, and every word
+// keeps the terminal's colour.
+func TestTheGaugesAreShaded(t *testing.T) {
 	p := painter{on: true, rgb: true}
 	ctx := contextReading{tokens: 150000, window: 200000, ok: true}
 	out := renderLimits(sampleRows(), ctx, renderOpts{p: p})
 	figure := func(s string) string { return "\x1b[38;2;255;180;0m" + s + "\x1b[0m" }
-	cyan := func(s string) string { return "\x1b[36m" + s + "\x1b[0m" }
+	white := func(s string) string { return "\x1b[38;2;242;242;242m" + s + "\x1b[0m" }
 	gauge := func(at float64, s string) string { return "\x1b[" + p.gaugeColour(at) + "m" + s + "\x1b[0m" }
+	bar := func(filled int) string { return strings.Repeat("▓", filled) + strings.Repeat("░", 100-filled) }
+	// The figures' column is as wide as CONTEXT's counter, 150k/200k: four cells more than a percentage.
 	for _, want := range []string{
-		"CONTEXT  " + gauge(0.75, "150k/200k") + "  " + gauge(0.75, " 75 %") + "  " + gauge(0.75, strings.Repeat("▓", 75)+strings.Repeat("░", 25)),
-		// 55 % spent with 34 % of the time gone: 21 points ahead, past the 20 that make it red.
-		"5 HOURS  " + figure(" 55 %") + " LIMIT " + gauge(1, strings.Repeat("▓", 11)+strings.Repeat("░", 9)) + " RESET AT " + figure("23:49"),
-		// 13 % against 5 %: 8 points ahead, 0.4 of the way to red.
-		"7 DAYS  " + figure(" 13 %") + " LIMIT " + gauge(0.4, "▓▓▓"+strings.Repeat("░", 17)) + " RESET AT " + figure("MON 17:59"),
-		// 96 % against 5 %: far past it.
-		"FABLE  " + figure(" 96 %") + " LIMIT " + gauge(1, strings.Repeat("▓", 20)),
-		figure(" 34 %") + "  TIME " + cyan(strings.Repeat("▓", 7)+strings.Repeat("░", 13)) + " RESET AFTER " + figure("3:17"),
+		"CONTEXT  " + gauge(0.75, "150k/200k") + " " + gauge(0.75, " 75 %") + " \x1b[",
+		"5 HOURS      " + figure(" 55 %") + " LIMIT \x1b[",
+		"░\x1b[0m RESET AT " + figure("23:49"),
+		"7 DAYS       " + figure(" 13 %") + " LIMIT \x1b[",
+		"░\x1b[0m RESET AT " + figure("MON 17:59"),
+		"FABLE        " + figure(" 96 %") + " LIMIT \x1b[",
+		figure(" 34 %") + "  TIME " + white(bar(34)) + " RESET AFTER " + figure("3:17"),
 		// The figures of a longer wait painted, the word between them not.
 		" RESET AFTER " + figure("6") + " days " + figure("21:27"),
 	} {
@@ -206,41 +227,206 @@ func TestGaugesArePaintedWhole(t *testing.T) {
 			t.Errorf("painted picture lacks %q:\n%q", want, out)
 		}
 	}
+	lines := strings.Split(out, "\n")
+	cells := func(line, gauge int) []string { return cellColours(lines[line])[gauge*100 : (gauge+1)*100] }
+	// CONTEXT at 75 %: the filled cells orange, the empty ones from the colour of 76 % to full red.
+	var want []string
+	for i := range 100 {
+		want = append(want, p.gaugeColour(max(0.75, float64(i+1)/100)))
+	}
+	sameCells(t, "CONTEXT at 75 %", cells(0, 0), want)
+	if c := cells(0, 0); c[75] == c[74] || c[99] != rgbCode([3]int{242, 36, 36}) {
+		t.Errorf("CONTEXT's empty part does not run from past its reading to red: %q … %q", c[75], c[99])
+	}
+	// The limits, side by side on the next line: 55 % spent with 34 % of the time gone is 21 points
+	// ahead, past the 10 that make it red; 13 % against 5 % is 8 points, 0.8 of the way from blue to red;
+	// 96 % against 5 % far past it.
+	limit := func(pace float64, filled int) []string {
+		var want []string
+		for i := range 100 {
+			switch {
+			case i < filled:
+				want = append(want, p.limitColour(pace))
+			case filled == 99:
+				want = append(want, p.limitColour(0))
+			default:
+				want = append(want, p.limitColour(float64(i-filled)/float64(99-filled)))
+			}
+		}
+		return want
+	}
+	sameCells(t, "5 HOURS", cells(1, 0), limit(1, 55))
+	sameCells(t, "7 DAYS", cells(1, 1), limit(0.8, 13))
+	sameCells(t, "FABLE", cells(1, 2), limit(1, 96))
+	if c := cells(1, 1); c[13] != rgbCode(limitStartRGB) || c[99] != rgbCode([3]int{242, 36, 36}) {
+		t.Errorf("a LIMIT's empty part does not run from blue to red: %q … %q", c[13], c[99])
+	}
 	if plain := renderLimits(sampleRows(), ctx, renderOpts{}); stripColour(out) != plain {
 		t.Errorf("painting changed the text:\n%q\n%q", stripColour(out), plain)
 	}
-	if strings.Contains(renderLimits(sampleRows(), ctx, renderOpts{p: painter{on: true}}), "38;2;") {
+	// Neighbouring empty cells of one colour are one run: on the 256-colour palette, eleven steps at most.
+	palette := renderLimits(sampleRows(), ctx, renderOpts{p: painter{on: true}})
+	if strings.Contains(palette, "38;2;") {
 		t.Error("a terminal without 24-bit colour got 24-bit codes")
 	}
-	// Spend behind the clock is green however full the gauge; a limit with no time gauge is measured
-	// as if no time had passed.
+	for _, line := range strings.Split(palette, "\n")[:2] {
+		runs := regexp.MustCompile("\x1b\\[([0-9;]+)m(░+)\x1b\\[0m").FindAllStringSubmatchIndex(line, -1)
+		if len(runs) < 3 {
+			t.Errorf("an empty part in fewer than two colours:\n%q", line)
+		}
+		for k := 1; k < len(runs); k++ {
+			if runs[k][0] == runs[k-1][1] && line[runs[k][2]:runs[k][3]] == line[runs[k-1][2]:runs[k-1][3]] {
+				t.Errorf("two neighbouring runs in one colour:\n%q", line)
+			}
+		}
+	}
+	// Spend behind the clock is blue however full the gauge; a limit with no time gauge is measured as
+	// if no time had passed.
 	behind := []statusRow{{label: "5 HOURS", pct: 80, reset: "23:49", windowBar: usageBar(90), windowPct: 90, after: "0:30"},
 		{label: "OPUS", pct: 6}}
-	out = renderLimits(behind, contextReading{}, renderOpts{p: p})
-	if !strings.Contains(out, "LIMIT "+gauge(0, strings.Repeat("▓", 16)+strings.Repeat("░", 4))) {
-		t.Errorf("spend behind the clock is not green:\n%q", out)
+	lines = strings.Split(renderLimits(behind, contextReading{}, renderOpts{p: p}), "\n")
+	sameCells(t, "spend behind the clock", cells(0, 0), limit(0, 80))
+	if !strings.Contains(lines[0], "OPUS     "+figure("  6 %")+" LIMIT ") {
+		t.Errorf("OPUS's percentage is not painted:\n%q", lines[0])
 	}
-	if !strings.Contains(out, "OPUS  "+figure("  6 %")+" LIMIT "+gauge(0.3, "▓▓"+strings.Repeat("░", 18))) {
-		t.Errorf("a limit without a time gauge is not measured against no time passed:\n%q", out)
+	sameCells(t, "a limit without a time gauge", cells(0, 1), limit(0.6, 6))
+}
+
+// sameCells reports the first cell of a gauge painted in a colour other than the one wanted.
+func sameCells(t *testing.T, gauge string, got, want []string) {
+	t.Helper()
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%s: cell %d is %q, want %q", gauge, i+1, got[i], want[i])
+			return
+		}
 	}
 }
 
-// The lead that turns a LIMIT gauge red is the config's: the 7-day gauge 8 points ahead is 0.4 of the
-// way at the shipped 20, and fully red once the setting is 8.
+// A LIMIT gauge is blue while its spend is not ahead of the time gauge under it, behind included, fully
+// red once it is ten points ahead, and in between turns evenly from one to the other the long way round,
+// through violet and magenta — never the green or yellow of a CONTEXT gauge — its filled cells all in
+// that one colour.
+func TestLimitColourRunsFromBlueToRed(t *testing.T) {
+	if blue, red := limitRGB(0), limitRGB(1); blue != limitStartRGB || blue != [3]int{36, 88, 242} || red != [3]int{242, 36, 36} {
+		t.Fatalf("blue %v, red %v", blue, red)
+	}
+	for _, c := range []struct {
+		name        string
+		spent, gone float64
+		at          float64
+	}{
+		{"behind the clock", 7, 9, 0},
+		{"level with it", 9, 9, 0},
+		{"five points ahead", 12, 7, 0.5},
+		{"ten points ahead", 17, 7, 1},
+		{"far ahead", 60, 7, 1},
+		// As the row prints them: "7 %" over "7 %" is level, "17 %" over "7 %" ten points ahead.
+		{"level as printed", 7.4, 7.2, 0},
+		{"ten points ahead as printed", 16.6, 7.4, 1},
+	} {
+		r := statusRow{pct: c.spent, windowPct: c.gone}
+		if got, want := limitRGB(r.paceAt()), limitRGB(c.at); got != want {
+			t.Errorf("%s: %v, want %v", c.name, got, want)
+		}
+	}
+	prevHue, prev := 0.0, limitRGB(0)
+	for i := 0; i <= 100; i++ {
+		rgb := limitRGB(float64(i) / 100)
+		h, _, _ := rgbToHSV(rgb)
+		if i == 100 && h < 1 {
+			h = 360
+		}
+		jump := max(abs(rgb[0]-prev[0]), abs(rgb[1]-prev[1]), abs(rgb[2]-prev[2]))
+		if h < prevHue || h < 220 || jump > 30 {
+			t.Fatalf("at %d%% the scale turns back or jumps: %v (hue %.0f) after %v (hue %.0f)", i, rgb, h, prev, prevHue)
+		}
+		prevHue, prev = h, rgb
+	}
+	// The scale moves evenly: three points of ten ahead are violet already, not blue, and five are
+	// halfway round from blue to red.
+	if h, _, _ := rgbToHSV(limitRGB(0.3)); h < 260 {
+		t.Errorf("three points ahead are still blue: hue %.0f, %v", h, limitRGB(0.3))
+	}
+	if h, _, _ := rgbToHSV(limitRGB(0.5)); math.Abs(h-(225+360)/2) > 2 {
+		t.Errorf("five points ahead are not halfway round: hue %.0f, %v", h, limitRGB(0.5))
+	}
+	// Each of the 256-colour palette's eleven steps is the palette's colour nearest the scale.
+	for i, code := range limitPalette256 {
+		if want := nearest256(limitRGB(float64(i) / 10)); code != want {
+			t.Errorf("step %d is %d, the nearest is %d", i, code, want)
+		}
+	}
+}
+
+func abs(n int) int { return max(n, -n) }
+
+// nearest256 is the colour of the 256-colour palette's cube and grey ramp nearest an RGB colour.
+func nearest256(rgb [3]int) int {
+	levels := [6]int{0, 95, 135, 175, 215, 255}
+	best, bestCode := -1, 0
+	for code := 16; code < 256; code++ {
+		var c [3]int
+		if code < 232 {
+			n := code - 16
+			c = [3]int{levels[n/36], levels[n/6%6], levels[n%6]}
+		} else {
+			g := 8 + (code-232)*10
+			c = [3]int{g, g, g}
+		}
+		d := (rgb[0]-c[0])*(rgb[0]-c[0]) + (rgb[1]-c[1])*(rgb[1]-c[1]) + (rgb[2]-c[2])*(rgb[2]-c[2])
+		if best < 0 || d < best {
+			best, bestCode = d, code
+		}
+	}
+	return bestCode
+}
+
+// The lead that turns a LIMIT gauge red is the config's: the 7-day gauge 8 points ahead is 0.8 of the
+// way at the shipped 10, and fully red once the setting is 8.
 func TestTheRedLeadIsConfigurable(t *testing.T) {
 	prev := limitAheadRed
 	defer func() { limitAheadRed = prev }()
 	limitAheadRed = 8
 	p := painter{on: true, rgb: true}
 	out := renderLimits(sampleRows(), contextReading{}, renderOpts{p: p})
-	want := "7 DAYS  \x1b[38;2;255;180;0m 13 %\x1b[0m LIMIT \x1b[" + p.gaugeColour(1) + "m▓▓▓" + strings.Repeat("░", 17) + "\x1b[0m"
+	want := "7 DAYS   \x1b[38;2;255;180;0m 13 %\x1b[0m LIMIT \x1b[" + p.limitColour(1) + "m" + strings.Repeat("▓", 13) + "\x1b[0m" +
+		"\x1b[" + p.limitColour(0) + "m░\x1b[0m"
 	if !strings.Contains(out, want) {
 		t.Errorf("a gauge as far ahead as the setting is not red:\n%q", out)
 	}
 }
 
+// The token counts stand on the CONTEXT line, two spaces after the cache's time left, where the
+// terminal has room for them beside a gauge as long as the limits'; where it has not, they take a line
+// of their own under the limits rather than shorten a gauge or push it out of line.
+func TestTheTokensStandBesideTheCacheWhereTheyFit(t *testing.T) {
+	ctx := contextReading{tokens: 150000, window: 200000, ok: true}
+	tokens := "SESSION: FRESH 2m CACHED 187m, ACCOUNT 5H: FRESH 20m CACHED 1.2b, 7D: FRESH 21m CACHED 1.2b"
+	rows := sampleRows()[:2]
+	for _, width := range []int{0, 250} {
+		lines := strings.Split(renderLimits(rows, ctx, renderOpts{width: width, contextTail: "CACHE 0:59", tokens: tokens}), "\n")
+		if !strings.HasSuffix(lines[0], "░ CACHE 0:59  "+tokens) || lines[len(lines)-1] == tokens {
+			t.Errorf("width %d: the tokens are not beside the cache:\n%s", width, strings.Join(lines, "\n"))
+		}
+	}
+	lines := strings.Split(renderLimits(rows, ctx, renderOpts{width: 150, contextTail: "CACHE 0:59", tokens: tokens}), "\n")
+	if len(lines) != 6 || !strings.HasSuffix(lines[0], "░ CACHE 0:59") || lines[5] != tokens {
+		t.Fatalf("width 150: the tokens did not take a line of their own under the limits:\n%s", strings.Join(lines, "\n"))
+	}
+	for _, l := range lines[:5] {
+		if cells := strings.Count(l, "▓") + strings.Count(l, "░"); cells != 100 || strings.Index(l, "▓")+strings.Index(l, "░") < 0 {
+			t.Errorf("width 150: a gauge lost cells for the tokens: %d in %q", cells, l)
+		}
+	}
+	// Without a context reading there is no gauge to keep: the cache and the tokens head the lines.
+	if top := strings.Split(renderLimits(rows, contextReading{}, renderOpts{width: 150, contextTail: "CACHE 0:59", tokens: tokens}), "\n")[0]; top != "CACHE 0:59  "+tokens {
+		t.Errorf("top line without a context reading = %q", top)
+	}
+}
+
 func TestRenderLimitsFitsTheWidth(t *testing.T) {
-	tail := "CACHE 0:59, SESSION: FRESH 1m CACHED 108m, ACCOUNT 5H: FRESH 20m CACHED 1.2b, 7D: FRESH 21m CACHED 1.2b"
+	tail := "CACHE 0:59"
 	ctx := contextReading{tokens: 150000, window: 200000, ok: true}
 	for _, width := range []int{400, 200, 130, 70, 60} {
 		out := renderLimits(sampleRows(), ctx, renderOpts{p: painter{on: true}, width: width, contextTail: tail})
@@ -251,7 +437,7 @@ func TestRenderLimitsFitsTheWidth(t *testing.T) {
 			}
 		}
 		if !strings.HasSuffix(stripColour(lines[0]), "░ "+tail) {
-			t.Errorf("width %d: the tokens are not on the CONTEXT line: %q", width, lines[0])
+			t.Errorf("width %d: the cache is not on the CONTEXT line: %q", width, lines[0])
 		}
 		// The CONTEXT line shrinks its gauge to fit until the gauge is as short as it gets.
 		if w := runeWidth(lines[0]); w > width && strings.Count(lines[0], "▓")+strings.Count(lines[0], "░") > minContextCells {
@@ -268,12 +454,21 @@ func TestRenderLimitsFitsTheWidth(t *testing.T) {
 			}
 		}
 	}
-	// Wide enough for all three: one pair. Narrow: one block per pair, with short gauges below 64.
-	if n := strings.Count(renderLimits(sampleRows(), contextReading{}, renderOpts{width: 400}), "\n"); n != 1 {
-		t.Errorf("at 400 columns the blocks took %d lines, want 2", n+1)
+	// Wide enough for all three: one pair; for two: two pairs. Narrow: one block per pair, the gauges
+	// one cell a percent while they fit, then just short enough to.
+	if n := strings.Count(renderLimits(sampleRows(), contextReading{}, renderOpts{width: 440}), "\n"); n != 1 {
+		t.Errorf("at 440 columns the blocks took %d lines, want 2", n+1)
 	}
-	if n := strings.Count(renderLimits(sampleRows(), contextReading{}, renderOpts{width: 70}), "\n"); n != 5 {
-		t.Errorf("at 70 columns the blocks took %d lines, want 6", n+1)
+	if n := strings.Count(renderLimits(sampleRows(), contextReading{}, renderOpts{width: 400}), "\n"); n != 3 {
+		t.Errorf("at 400 columns the blocks took %d lines, want 4", n+1)
+	}
+	if out := renderLimits(sampleRows(), contextReading{}, renderOpts{width: 146}); !strings.Contains(out, strings.Repeat("░", 87)) ||
+		strings.Count(out, "\n") != 5 {
+		t.Errorf("at 146 columns, room for a block at one cell a percent, the gauges were shortened:\n%s", out)
+	}
+	if out := renderLimits(sampleRows(), contextReading{}, renderOpts{width: 70}); strings.Count(out, "\n") != 5 ||
+		!strings.Contains(out, "LIMIT ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░ RESET AT 23:49") {
+		t.Errorf("at 70 columns the blocks did not take a pair each, their gauges 24 cells:\n%s", out)
 	}
 	narrow := renderLimits(sampleRows(), contextReading{}, renderOpts{width: 50})
 	if strings.Contains(narrow, strings.Repeat("░", 11)) || !strings.Contains(narrow, "LIMIT ▓▓▓▓▓▓░░░░") {
@@ -301,6 +496,28 @@ func stripColour(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// cellColours reads a painted line back as the colour code each gauge cell in it is painted in, in
+// order, and an empty string for a cell left unpainted.
+func cellColours(s string) []string {
+	var cells []string
+	code := ""
+	for i, part := range strings.Split(s, "\x1b[") {
+		// Every part but the first starts with the code it was split at.
+		if end := strings.IndexByte(part, 'm'); i > 0 && end >= 0 {
+			if code = part[:end]; code == "0" {
+				code = ""
+			}
+			part = part[end+1:]
+		}
+		for _, r := range part {
+			if r == barFilled || r == barEmpty {
+				cells = append(cells, code)
+			}
+		}
+	}
+	return cells
 }
 
 // --- what Claude Code hands the status line ----------------------------------------
@@ -668,12 +885,16 @@ func TestRenderStatusline(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	out := renderStatusline(argSet{}, input, nil, now)
 	lines := strings.Split(out, "\n")
-	wantTail := "░ CACHE 1:00, SESSION: FRESH 21k CACHED 130k, ACCOUNT 5H: FRESH 21k CACHED 130k, 7D: FRESH 21k CACHED 130k"
-	if !strings.HasPrefix(lines[0], "CONTEXT  150k/200k   75 %") || !strings.HasSuffix(lines[0], wantTail) {
-		t.Errorf("top line = %q", lines[0])
+	// CONTEXT with a hundred-cell gauge, the cache's time left and, two spaces on, the token counts.
+	if want := "CONTEXT  150k/200k  75 % " + strings.Repeat("▓", 75) + strings.Repeat("░", 25) + " CACHE 1:00  " +
+		"SESSION: FRESH 21k CACHED 130k, ACCOUNT 5H: FRESH 21k CACHED 130k, 7D: FRESH 21k CACHED 130k"; lines[0] != want {
+		t.Errorf("top line = %q, want %q", lines[0], want)
 	}
-	if len(lines) != 3 || !strings.HasPrefix(lines[1], "5 HOURS") || !strings.Contains(lines[1], "FABLE   12 % LIMIT") {
-		t.Errorf("want CONTEXT and one pair of limit lines, nothing else:\n%s", out)
+	// The account's two windows on one pair of lines; the model's own weekly bucket, which the usage
+	// document carries, is the model's block's alone.
+	if len(lines) != 3 || !strings.HasPrefix(lines[1], "5 HOURS") || !strings.Contains(lines[1], "7 DAYS        10 % LIMIT") ||
+		strings.Contains(out, "FABLE") {
+		t.Errorf("want CONTEXT and one pair of lines for the two windows, nothing else:\n%s", out)
 	}
 	if strings.Contains(out, "\x1b") {
 		t.Errorf("NO_COLOR not honoured:\n%s", out)
@@ -696,8 +917,231 @@ func TestRenderStatusline(t *testing.T) {
 	}
 	withLive := strings.TrimSuffix(input, "}") + fmt.Sprintf(`,"rate_limits":{"five_hour":{"used_percentage":71,"resets_at":%d}}}`, now.Unix()+3600)
 	out = renderStatusline(argSet{}, withLive, nil, now)
-	if !strings.Contains(out, "5 HOURS   71 % LIMIT") || strings.Contains(out, "DATA") || len(strings.Split(out, "\n")) != 3 {
+	if !strings.Contains(out, "5 HOURS       71 % LIMIT") || strings.Contains(out, "DATA") || len(strings.Split(out, "\n")) != 3 {
 		t.Errorf("stale figures not replaced quietly:\n%s", out)
+	}
+}
+
+// --- the panel -----------------------------------------------------------------------
+
+// replyCachedAt is a reply line written at a given moment that says, as the API does, which lifetime
+// its cache write was made with: "5m", "1h", or "" for a line that does not say at all.
+func replyCachedAt(id string, at time.Time, write, read int, lifetime string) string {
+	split := ""
+	switch lifetime {
+	case "5m":
+		split = fmt.Sprintf(`,"cache_creation":{"ephemeral_5m_input_tokens":%d,"ephemeral_1h_input_tokens":0}`, write)
+	case "1h":
+		split = fmt.Sprintf(`,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":%d}`, write)
+	}
+	return fmt.Sprintf(`{"type":"assistant","timestamp":%q,"requestId":"req_%s","message":{"id":"msg_%s","usage":{"input_tokens":5,"output_tokens":1000,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d%s}}}`,
+		at.UTC().Format(time.RFC3339Nano), id, id, write, read, split)
+}
+
+// sgrHex is the colour a 24-bit SGR code paints, as the panel names it.
+func sgrHex(t *testing.T, code string) string {
+	t.Helper()
+	var r, g, b int
+	if _, err := fmt.Sscanf(code, "38;2;%d;%d;%d", &r, &g, &b); err != nil {
+		t.Fatalf("not a 24-bit colour: %q", code)
+	}
+	return hexColour([3]int{r, g, b})
+}
+
+// emptyOf reads the empty part of a gauge the status line painted back as the panel's runs: the colour
+// codes of its cells after the filled ones, each in hex, neighbours of one colour together.
+func emptyOf(t *testing.T, codes []string, filled int) []colourRun {
+	t.Helper()
+	runs := []colourRun{}
+	for _, code := range codes[filled:] {
+		c := sgrHex(t, code)
+		if n := len(runs); n > 0 && runs[n-1].Colour == c {
+			runs[n-1].Cells++
+			continue
+		}
+		runs = append(runs, colourRun{Colour: c, Cells: 1})
+	}
+	return runs
+}
+
+// The panel says what the status line says, as data — the same figures, words and colours, in the
+// same order — and reads the prompt cache off the transcript, since the input the plugin builds holds
+// no reading of it.
+func TestRenderPanel(t *testing.T) {
+	if runtimeIsDarwin() {
+		t.Skip("reads the login Keychain on macOS")
+	}
+	now := time.Now()
+	withCache(t, 5*time.Second, usageDoc(55, 10, now))
+	tp := filepath.Join(claudeDir, "projects", "p", "s.jsonl")
+	if err := os.MkdirAll(filepath.Dir(tp), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cachedAt := now.Add(-time.Minute)
+	writeLines(t, tp, replyCachedAt("a", cachedAt, 20000, 130000, "1h"))
+	input := fmt.Sprintf(`{"transcript_path":%q,"model":{"id":"claude-fable-5-1"},"context_window":{"context_window_size":200000}}`, tp)
+
+	out := renderPanel(argSet{}, input, nil, now)
+	var pic panelPicture
+	if err := json.Unmarshal([]byte(out), &pic); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+
+	// The status line for the same input, painted in 24-bit colour on one row, with the reading of
+	// the prompt cache the transcript gives.
+	t.Setenv("COLUMNS", "")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM_PROGRAM", "")
+	withReading := strings.TrimSuffix(input, "}") + fmt.Sprintf(`,"prompt_cache":{"warm":true,"caching_observed":true,"ttl":"1h","expires_at":%d}}`,
+		cachedAt.Add(time.Hour).Unix())
+	status := renderStatusline(argSet{}, withReading, nil, now)
+	lines := strings.Split(status, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want the status line on three lines:\n%s", stripColour(status))
+	}
+
+	top := regexp.MustCompile("^CONTEXT +\x1b\\[([0-9;]+)m([^\x1b]+)\x1b\\[0m +\x1b\\[[0-9;]+m *([0-9]+) %.* CACHE \x1b\\[([0-9;]+)m([^\x1b]+)\x1b\\[0m  (.+)$").
+		FindStringSubmatch(lines[0])
+	if top == nil {
+		t.Fatalf("top line not understood: %q", lines[0])
+	}
+	if c := pic.Context; c == nil || c.Tokens != top[2] || num(c.Pct, 0) != top[3] || c.Colour != sgrHex(t, top[1]) {
+		t.Errorf("context = %+v, the status line's = %q %s %%, %s", pic.Context, top[2], top[3], sgrHex(t, top[1]))
+	}
+	// Every gauge's empty part is the status line's cells, colour for colour.
+	if c := pic.Context; c != nil {
+		if want := emptyOf(t, cellColours(lines[0]), int(c.Pct)); !reflect.DeepEqual(c.Empty, want) {
+			t.Errorf("context's empty part = %v, the status line's = %v", c.Empty, want)
+		}
+	}
+	if c := pic.Cache; c == nil || c.Text != top[5] || c.Text != "0:59" || c.Colour != sgrHex(t, top[4]) {
+		t.Errorf("cache = %+v, the status line's = %q %s", pic.Cache, top[5], sgrHex(t, top[4]))
+	}
+	if pic.Tokens != top[6] || !strings.HasPrefix(pic.Tokens, "SESSION: FRESH 21k CACHED 130k") {
+		t.Errorf("tokens = %q, the status line's = %q", pic.Tokens, top[6])
+	}
+
+	limitTops := regexp.MustCompile("([0-9A-Z][0-9A-Z ]*?) +\x1b\\[([0-9;]+)m *([0-9]+) %\x1b\\[0m LIMIT \x1b\\[([0-9;]+)m▓+\x1b\\[0m(?:\x1b\\[[0-9;]+m░+\x1b\\[0m)* RESET AT \x1b\\[[0-9;]+m([^\x1b]+)\x1b\\[0m").
+		FindAllStringSubmatch(lines[1], -1)
+	bottoms := regexp.MustCompile(`([0-9]+) %  ?(TIME|WORK) [▓░]+ RESET AFTER ([0-9a-z: ]+?)(?: {2,}|$)`).
+		FindAllStringSubmatch(stripColour(lines[2]), -1)
+	if len(pic.Limits) != 2 || len(limitTops) != 2 || len(bottoms) != 2 {
+		t.Fatalf("want the two windows on both sides; panel %d, status line %d and %d:\n%s", len(pic.Limits), len(limitTops), len(bottoms), stripColour(status))
+	}
+	for i, l := range pic.Limits {
+		st, sb := limitTops[i], bottoms[i]
+		if l.Label != st[1] || num(l.Pct, 0) != st[3] || l.Colour != sgrHex(t, st[4]) || l.Reset != st[5] {
+			t.Errorf("limit %d = %+v, the status line's = %q %s %% %s %q", i, l, st[1], st[3], sgrHex(t, st[4]), st[5])
+		}
+		if pic.FiguresColour != sgrHex(t, st[2]) {
+			t.Errorf("figures colour = %s, the status line's = %s", pic.FiguresColour, sgrHex(t, st[2]))
+		}
+		if w := l.Window; w == nil || num(w.Pct, 0) != sb[1] || w.Caption != sb[2] || w.After != sb[3] || w.Colour != hexColour(timeRGB) {
+			t.Errorf("limit %d's window = %+v, the status line's = %s %% %s %q", i, l.Window, sb[1], sb[2], sb[3])
+		}
+		// The LIMIT gauges stand side by side on the status line's second line, the time gauges on its
+		// third.
+		if want := emptyOf(t, cellColours(lines[1])[i*100:(i+1)*100], int(l.Pct)); !reflect.DeepEqual(l.Empty, want) {
+			t.Errorf("limit %d's empty part = %v, the status line's = %v", i, l.Empty, want)
+		}
+		if w := l.Window; w != nil {
+			if want := emptyOf(t, cellColours(lines[2])[i*100:(i+1)*100], int(w.Pct)); !reflect.DeepEqual(w.Empty, want) {
+				t.Errorf("limit %d's window's empty part = %v, the status line's = %v", i, w.Empty, want)
+			}
+		}
+	}
+	// The usage document has a Fable bucket too, which neither draws.
+	if pic.Limits[0].Label != "5 HOURS" || pic.Limits[1].Label != "7 DAYS" {
+		t.Errorf("want the 5-hour window, then the 7-day one: %+v", pic.Limits)
+	}
+
+	// A prompt-cache reading in the input is taken over the transcript's.
+	withShortReading := strings.TrimSuffix(input, "}") +
+		fmt.Sprintf(`,"prompt_cache":{"warm":true,"caching_observed":true,"ttl":"1h","expires_at":%d}}`, now.Unix()+600)
+	if err := json.Unmarshal([]byte(renderPanel(argSet{}, withShortReading, nil, now)), &pic); err != nil || pic.Cache == nil || pic.Cache.Text != "0:10" {
+		t.Errorf("the input's own cache reading was not used: %+v", pic.Cache)
+	}
+
+	// Before the first reply nothing has measured the context: the plugin's estimate stands in, said to
+	// be one, and a measured reading is taken over it.
+	estimate := `{"model":{"id":"claude-fable-5-1"},"context_window":{"context_window_size":1000000},"context_estimate":48000}`
+	want := panelContext{Tokens: "48k/1m", Pct: 5, Colour: hexColour(gaugeRGB(0.048)), Estimated: true}
+	err := json.Unmarshal([]byte(renderPanel(argSet{}, estimate, nil, now)), &pic)
+	// Its empty part runs on from the sixth cell, at the colour of 6 %, to the hundredth.
+	cells := 0
+	if c := pic.Context; c != nil {
+		for _, r := range c.Empty {
+			cells += r.Cells
+		}
+	}
+	if c := pic.Context; err != nil || c == nil || c.Tokens != want.Tokens || c.Pct != want.Pct || c.Colour != want.Colour || !c.Estimated ||
+		cells != 95 || c.Empty[0].Colour != hexColour(gaugeRGB(0.06)) {
+		t.Errorf("estimated context = %+v, want %+v and 95 empty cells from the colour of 6 %%", pic.Context, want)
+	}
+	measured := strings.TrimSuffix(input, "}") + `,"context_estimate":48000}`
+	if err := json.Unmarshal([]byte(renderPanel(argSet{}, measured, nil, now)), &pic); err != nil || pic.Context == nil ||
+		pic.Context.Estimated || pic.Context.Tokens != "150k/200k" {
+		t.Errorf("the estimate was taken over a measured context: %+v", pic.Context)
+	}
+	if status := stripColour(renderStatusline(argSet{}, estimate, nil, now)); strings.Contains(status, "CONTEXT") {
+		t.Errorf("the status line drew an estimate it is never handed: %q", status)
+	}
+
+	// No figures at all, and no transcript: what the status line writes as LIMITS -> N/A, and nothing
+	// on the CONTEXT line.
+	withCache(t, 0, "")
+	empty := renderPanel(argSet{}, `{}`, nil, now)
+	if !strings.Contains(empty, `"limits":null`) || !strings.Contains(empty, `"context":null`) || !strings.Contains(empty, `"cache":null`) {
+		t.Errorf("panel without figures = %s", empty)
+	}
+	if status := stripColour(renderStatusline(argSet{}, `{}`, nil, now)); status != "LIMITS -> N/A" {
+		t.Errorf("status line without figures = %q", status)
+	}
+}
+
+// The cache's time left is read from the newest main-thread reply that used it, on the lifetime the
+// newest reply that wrote to it was written with.
+func TestTranscriptPromptCache(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	sidechain := func(line string) string {
+		return strings.Replace(line, `{"type":"assistant",`, `{"type":"assistant","isSidechain":true,`, 1)
+	}
+	dir := t.TempDir()
+	for i, c := range []struct {
+		name  string
+		lines []string
+		want  string // the cache part as the picture writes it, unpainted
+		ttl   string
+	}{
+		{"no reply yet", []string{`{"type":"user","message":{"content":"hi"}}`}, "", ""},
+		{"written for an hour ten minutes ago",
+			[]string{replyCachedAt("a", ago(10*time.Minute), 900, 0, "1h")}, "CACHE 0:50", "1h"},
+		{"read since, on the lifetime it was written with",
+			[]string{replyCachedAt("a", ago(4*time.Minute), 900, 0, "5m"), replyCachedAt("b", ago(2*time.Minute), 0, 900, "")},
+			"CACHE 0:03", "5m"},
+		{"gone cold", []string{replyCachedAt("a", ago(2*time.Hour), 900, 0, "1h")}, "CACHE COLD", "1h"},
+		{"a subagent's reply is not this thread's cache",
+			[]string{replyCachedAt("a", ago(30*time.Minute), 900, 0, "1h"), sidechain(replyCachedAt("b", ago(time.Minute), 900, 0, "1h"))},
+			"CACHE 0:30", "1h"},
+		{"a newer reply that used no cache leaves the last use standing",
+			[]string{replyCachedAt("a", ago(20*time.Minute), 900, 0, "1h"), replyCachedAt("b", ago(time.Minute), 0, 0, "")},
+			"CACHE 0:40", "1h"},
+		{"an hour where no reply says", []string{replyCachedAt("a", ago(15*time.Minute), 900, 300, "")}, "CACHE 0:45", ""},
+	} {
+		p := filepath.Join(dir, fmt.Sprintf("%d.jsonl", i))
+		writeLines(t, p, c.lines...)
+		pc := transcriptPromptCache(p, now)
+		got := (&statusInput{PromptCache: pc}).cacheText(now, painter{})
+		if got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+		if pc != nil && pc.TTL != c.ttl {
+			t.Errorf("%s: lifetime %q, want %q", c.name, pc.TTL, c.ttl)
+		}
+	}
+	if transcriptPromptCache("", now) != nil || transcriptPromptCache(filepath.Join(dir, "missing.jsonl"), now) != nil {
+		t.Error("a reading without a transcript")
 	}
 }
 
@@ -769,13 +1213,12 @@ func TestCacheText(t *testing.T) {
 			t.Errorf("%s: %q, want %q", c.raw, got, c.want)
 		}
 	}
-	// With no session to count, the cache stands alone after the label; with neither, nothing.
-	in := decodeStatusInput(cache("1h", 600))
-	if got := in.contextTail(now, painter{}, time.Time{}, time.Time{}); got != "CACHE 0:10" {
-		t.Errorf("tail = %q", got)
+	// Unpainted it reads as the status line writes it; with no reading, nothing.
+	if got := decodeStatusInput(cache("1h", 600)).cacheText(now, painter{}); got != "CACHE 0:10" {
+		t.Errorf("cache = %q", got)
 	}
-	if got := decodeStatusInput(`{}`).contextTail(now, painter{}, time.Time{}, time.Time{}); got != "" {
-		t.Errorf("tail with nothing to say = %q", got)
+	if got := decodeStatusInput(`{}`).cacheText(now, painter{}); got != "" {
+		t.Errorf("cache with nothing to say = %q", got)
 	}
 }
 
